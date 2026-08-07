@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spare Part List — คลังอะไหล่</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="login-screen" class="login-screen">
+  <div class="login-card">
+    <h2>🔐 เข้าสู่ระบบคลังอะไหล่</h2>
+    <div class="form-group">
+      <label>อีเมล</label>
+      <input type="email" id="login-email" placeholder="admin@example.com">
+    </div>
+    <div class="form-group" style="margin-top:10px">
+      <label>รหัสผ่าน</label>
+      <input type="password" id="login-password" placeholder="admin123">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="handleLogin()">เข้าสู่ระบบ</button>
+    </div>
+    <div class="login-hint">บัญชีตัวอย่าง: admin@example.com / admin123 หรือ user@example.com / user123</div>
+    <div id="login-message" class="login-message"></div>
+  </div>
+</div>
+
+<div id="app-shell" class="shell hidden">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">⚙️</div>
+      <div>
+        <div class="logo-text">SpareParts</div>
+        <div class="logo-sub">คลังอะไหล่</div>
+      </div>
+    </div>
+    <nav>
+      <div class="nav-section">หลัก</div>
+      <div class="nav-item active" onclick="navigate('dashboard')">
+        <span class="nav-icon">📊</span> Dashboard
+      </div>
+      <div class="nav-section">เบิกอะไหล่</div>
+      <div class="nav-item" id="nav-shop" onclick="navigate('shop')">
+        <span class="nav-icon">🛍️</span> เลือกอะไหล่
+      </div>
+      <div class="nav-item" id="nav-cart" onclick="navigate('cart')">
+        <span class="nav-icon">🛒</span> ตะกร้าของฉัน
+        <span class="nav-badge blue" id="cart-nav-badge" style="display:none">0</span>
+      </div>
+      <div class="nav-section">คลังสินค้า</div>
+      <div class="nav-item" onclick="navigate('inventory')">
+        <span class="nav-icon">📦</span> คลังอะไหล่
+      </div>
+      <div class="nav-item" id="nav-receive" onclick="navigate('receive')">
+        <span class="nav-icon">⬇️</span> รับอะไหล่เข้า
+      </div>
+      <div class="nav-section">รายงาน</div>
+      <div class="nav-item" id="nav-history" onclick="navigate('history')">
+        <span class="nav-icon">📋</span> ประวัติการเบิก
+      </div>
+      <div class="nav-item" id="nav-lowstock" onclick="navigate('lowstock')">
+        <span class="nav-icon">⚠️</span> แจ้งเตือนสต็อกต่ำ
+        <span class="nav-badge" id="low-badge">0</span>
+      </div>
+      <div class="nav-item" onclick="navigate('recommend')">
+        <span class="nav-icon">💡</span> ข้อแนะนำ
+      </div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="page-title" id="page-title">Dashboard</div>
+      <div class="topbar-right">
+        <div class="badge-alert" id="alert-btn" onclick="navigate('lowstock')" style="display:none">
+          ⚠️ <span id="alert-count">0</span> รายการใกล้หมด
+        </div>
+        <button class="cart-fab" onclick="navigate('cart')" type="button" aria-label="ตะกร้าของฉัน" title="ตะกร้าของฉัน">
+          🛒<span class="cart-count" id="cart-fab-badge" style="display:none">0</span>
+        </button>
+        <button class="theme-toggle" id="permission-toggle" onclick="openPermissionModal()" type="button" aria-label="Manage permissions" title="กำหนดสิทธิ์การใช้งาน">🔐</button>
+        <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" type="button" aria-label="Switch theme" title="สลับธีม">☾</button>
+        <div class="local-pill" title="ข้อมูลบันทึกในเครื่องนี้ (localStorage)">🗄️ Local Storage</div>
+        <div id="user-chip" class="user-chip" style="display:none"></div>
+        <button id="logout-btn" class="btn btn-outline btn-sm" onclick="logout()" style="display:none">🚪 ออกระบบ</button>
+        <div style="font-size:12px;color:var(--muted)" id="current-date"></div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="page active" id="page-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card blue">
+            <div class="stat-label">อะไหล่ทั้งหมด</div>
+            <div class="stat-value" id="stat-total">0</div>
+            <div class="stat-sub">รายการในคลัง</div>
+          </div>
+          <div class="stat-card green">
+            <div class="stat-label">รับเข้าเดือนนี้</div>
+            <div class="stat-value" id="stat-received">0</div>
+            <div class="stat-sub">รายการ</div>
+          </div>
+          <div class="stat-card amber">
+            <div class="stat-label">เบิกเดือนนี้</div>
+            <div class="stat-value" id="stat-withdrawn">0</div>
+            <div class="stat-sub">รายการ</div>
+          </div>
+          <div class="stat-card red">
+            <div class="stat-label">ใกล้หมดสต็อก</div>
+            <div class="stat-value" id="stat-lowstock">0</div>
+            <div class="stat-sub">รายการ</div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">การเบิกรายเดือน</span>
+            </div>
+            <div class="chart-container">
+              <canvas id="chart-monthly"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">ประเภทอะไหล่</span>
+            </div>
+            <div class="chart-container">
+              <canvas id="chart-category"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">อะไหล่ใกล้หมด</span>
+              <span class="badge badge-red" id="dash-low-count">0 รายการ</span>
+            </div>
+            <div id="dash-lowstock-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">เบิกล่าสุด</span>
+            </div>
+            <div id="dash-recent-withdrawals"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-shop">
+        <div id="shop-access-block" class="access-block hidden">คุณไม่มีสิทธิ์เบิกอะไหล่ในขณะนี้ โปรดติดต่อผู้ดูแลระบบ</div>
+        <div id="shop-wrapper">
+          <div class="card" style="margin-bottom:16px">
+            <div class="search-bar" style="margin-bottom:0">
+              <input type="text" id="shop-search" placeholder="🔍 ค้นหาชื่อหรือรหัสอะไหล่..." oninput="renderShop()">
+              <select id="shop-cat" onchange="renderShop()">
+                <option value="">ทุกประเภท</option>
+              </select>
+            </div>
+          </div>
+          <div class="shop-grid" id="shop-grid"></div>
+        </div>
+      </div>
+
+      <div class="page" id="page-cart">
+        <div id="cart-access-block" class="access-block hidden">คุณไม่มีสิทธิ์เบิกอะไหล่ในขณะนี้ โปรดติดต่อผู้ดูแลระบบ</div>
+        <div id="cart-wrapper">
+          <div class="grid-3">
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title">รายการในตะกร้า</span>
+                <button class="btn btn-outline btn-sm" onclick="clearCart()">🗑️ ล้างตะกร้า</button>
+              </div>
+              <div id="cart-empty" class="empty hidden"><div class="empty-icon">🛒</div>ยังไม่มีอะไหล่ในตะกร้า<br><button class="btn btn-primary btn-sm" style="margin-top:14px" onclick="navigate('shop')">ไปเลือกอะไหล่</button></div>
+              <div class="cart-list" id="cart-list"></div>
+              <div class="cart-summary-bar hidden" id="cart-summary">
+                <span style="color:var(--muted)">จำนวนรายการทั้งหมด</span>
+                <span class="cart-total-badge"><span id="cart-total-count">0</span> ชิ้น</span>
+              </div>
+            </div>
+            <div class="card hidden" id="cart-checkout-form">
+              <div class="card-header"><span class="card-title">ยืนยันการเบิก</span></div>
+              <div class="form-group">
+                <label>คนเบิก</label>
+                <input type="text" id="cart-withdrawer" placeholder="ชื่อ-สกุล">
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <label>วันที่เบิก</label>
+                <input type="date" id="cart-date">
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <label>ผู้อนุมัติ</label>
+                <select id="cart-approver">
+                  <option value="สมชาย วิศวกร">สมชาย วิศวกร</option>
+                  <option value="วิภา หัวหน้าคลัง">วิภา หัวหน้าคลัง</option>
+                  <option value="ประยุทธ์ ผู้จัดการ">ประยุทธ์ ผู้จัดการ</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <label>ใช้กับเครื่องจักร (Machine ID)</label>
+                <input type="text" id="cart-machine" placeholder="เช่น TRIM-L01, GLUE-02">
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary" onclick="checkoutCart()">✅ ยืนยันการเบิก</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-inventory">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">คลังอะไหล่ทั้งหมด</span>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-outline btn-sm" onclick="exportExcel()">📊 Excel</button>
+              <button class="btn btn-outline btn-sm" onclick="exportPDF()">📄 PDF</button>
+              <button class="btn btn-primary btn-sm" onclick="openAddPart()">+ เพิ่มอะไหล่</button>
+              <button class="btn btn-outline btn-sm" onclick="navigate('receive')">+ รับเข้า</button>
+            </div>
+          </div>
+          <div class="search-bar">
+            <input type="text" id="inv-search" placeholder="🔍 ค้นหาชื่อหรือรหัสอะไหล่..." oninput="renderInventory()">
+            <select id="inv-cat" onchange="renderInventory()">
+              <option value="">ทุกประเภท</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>รหัส</th><th>รูปภาพ</th><th>ชื่ออะไหล่</th><th>ประเภท</th><th>จำนวน</th>
+                  <th>ขั้นต่ำ</th><th>สถานะ</th><th>ที่เก็บ</th><th>อัปเดต</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="inv-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-receive">
+        <div class="card" style="max-width:680px">
+          <div class="card-header">
+            <span class="card-title">รับอะไหล่เข้าคลัง</span>
+          </div>
+          <div id="receive-access-block" class="access-block hidden">คุณไม่มีสิทธิ์รับอะไหล่เข้าในขณะนี้ โปรดติดต่อผู้ดูแลระบบ</div>
+          <div id="receive-form-wrapper">
+          <div class="form-grid">
+            <div class="form-group">
+              <label>วันที่รับเข้า</label>
+              <input type="date" id="r-date">
+            </div>
+            <div class="form-group">
+              <label>ผู้รับเข้า</label>
+              <input type="text" id="r-receiver" placeholder="ชื่อ-สกุล">
+            </div>
+            <div class="form-group full">
+              <label>ชื่ออะไหล่</label>
+              <input type="text" id="r-name" placeholder="เช่น Bearing 6205-2RS">
+            </div>
+            <div class="form-group">
+              <label>รหัสอะไหล่</label>
+              <input type="text" id="r-code" placeholder="เช่น BRG-6205">
+            </div>
+            <div class="form-group">
+              <label>ประเภท</label>
+              <select id="r-category">
+                <option value="Bearing">Bearing</option>
+                <option value="Belt">Belt / สายพาน</option>
+                <option value="Seal">Seal / โอริง</option>
+                <option value="Sensor">Sensor</option>
+                <option value="Motor">Motor / มอเตอร์</option>
+                <option value="Cylinder">Cylinder / กระบอก</option>
+                <option value="Gear">Gear / เฟือง</option>
+                <option value="Filter">Filter</option>
+                <option value="Other">อื่นๆ</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>จำนวนที่รับเข้า</label>
+              <input type="number" id="r-qty" placeholder="0" min="1">
+            </div>
+            <div class="form-group">
+              <label>จำนวนขั้นต่ำ (แจ้งเตือน)</label>
+              <input type="number" id="r-minqty" placeholder="5" min="0" value="5">
+            </div>
+            <div class="form-group">
+              <label>ที่เก็บ (Bin/Shelf)</label>
+              <input type="text" id="r-location" placeholder="เช่น A1-03">
+            </div>
+            <div class="form-group full">
+              <label>แนบรูปภาพ (ตัวเลือก)</label>
+              <input type="text" id="r-image-url" placeholder="ลิงก์รูปภาพ (ถ้ามี)">
+            </div>
+            <div class="form-group full">
+              <label>หรือเลือกไฟล์รูปภาพ</label>
+              <input type="file" id="r-image-file" accept="image/*">
+            </div>
+            <div class="form-group full">
+              <label>ตัวอย่างภาพ</label>
+              <div id="r-image-preview" class="img-preview">ไม่มีรูปภาพ</div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-success" onclick="receivePart()">✅ บันทึกรับเข้า</button>
+            <button class="btn btn-outline" onclick="clearReceiveForm()">ล้างฟอร์ม</button>
+          </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-history">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">ประวัติการเบิกอะไหล่</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-outline btn-sm" onclick="exportHistoryExcel()">📊 Excel</button>
+              <button class="btn btn-outline btn-sm" onclick="exportHistoryPDF()">📄 PDF</button>
+            </div>
+          </div>
+          <div class="search-bar">
+            <input type="text" id="hist-search" placeholder="🔍 ค้นหาชื่อ/รหัส/เครื่องจักร..." oninput="renderHistory()">
+            <input type="date" id="hist-date-from" onchange="renderHistory()" title="จากวันที่">
+            <input type="date" id="hist-date-to" onchange="renderHistory()" title="ถึงวันที่">
+            <select id="hist-machine" onchange="renderHistory()">
+              <option value="">ทุกเครื่องจักร</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th><th>วันที่</th><th>รหัส</th><th>ชื่ออะไหล่</th>
+                  <th>จำนวน</th><th>คนเบิก</th><th>เครื่องจักร</th><th>ผู้อนุมัติ</th>
+                </tr>
+              </thead>
+              <tbody id="hist-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-lowstock">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">อะไหล่ที่ต้องสั่งซื้อ / ใกล้หมด</span>
+            <span class="badge badge-red" id="lowstock-count">0 รายการ</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>รหัส</th><th>ชื่ออะไหล่</th><th>ประเภท</th>
+                  <th>คงเหลือ</th><th>ขั้นต่ำ</th><th>ที่เก็บ</th><th>สถานะ</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="ls-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-recommend">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header"><span class="card-title">อะไหล่มักใช้คู่กัน</span></div>
+            <div id="rec-pair-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">เครื่องจักรใช้อะไหล่บ่อย</span></div>
+            <div id="rec-machine-list"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">คำแนะนำจากระบบ</span></div>
+          <div id="rec-advice-list"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+<div class="modal-bg" id="permission-modal-bg">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-close" onclick="closePermissionModal()">×</div>
+    <div class="modal-title">🔐 กำหนดสิทธิ์การใช้งาน</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label style="display:flex;align-items:center;justify-content:space-between">
+        <span>สิทธิ์ User สำหรับรับเข้า</span>
+        <input type="checkbox" id="perm-receive">
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between">
+        <span>สิทธิ์ User สำหรับเบิก</span>
+        <input type="checkbox" id="perm-withdraw">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="savePermissions()">บันทึกสิทธิ์</button>
+      <button class="btn btn-outline" onclick="closePermissionModal()">ปิด</button>
+    </div>
+  </div>
+</div>
+<div class="image-preview-modal" id="image-preview-modal" onclick="closeImagePreview()">
+  <span class="image-preview-close" onclick="closeImagePreview(event)">×</span>
+  <img id="image-preview-img" src="" alt="Preview">
+</div>
+
+<div class="modal-bg" id="edit-modal-bg">
+  <div class="modal">
+    <span class="modal-close" onclick="closeEditModal()">✕</span>
+    <div class="modal-title" id="edit-modal-title">✏️ เพิ่ม/แก้ไขอะไหล่</div>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>ชื่ออะไหล่</label>
+        <input type="text" id="edit-name" placeholder="เช่น Bearing 6205-2RS">
+      </div>
+      <div class="form-group full">
+        <label>รูปภาพ (เลือกไฟล์หรือใส่ URL)</label>
+        <input type="file" id="edit-image-file" accept="image/*">
+        <input type="text" id="edit-image-url" placeholder="https://... หรือ data:image/..." style="margin-top:8px">
+        <div class="img-preview" id="edit-image-preview">ไม่มีรูปภาพ</div>
+      </div>
+      <div class="form-group">
+        <label>รหัสอะไหล่</label>
+        <input type="text" id="edit-code" placeholder="เช่น BRG-6205">
+      </div>
+      <div class="form-group">
+        <label>ประเภท</label>
+        <select id="edit-category">
+          <option value="Bearing">Bearing</option>
+          <option value="Belt">Belt / สายพาน</option>
+          <option value="Seal">Seal / โอริง</option>
+          <option value="Sensor">Sensor</option>
+          <option value="Motor">Motor / มอเตอร์</option>
+          <option value="Cylinder">Cylinder / กระบอก</option>
+          <option value="Gear">Gear / เฟือง</option>
+          <option value="Filter">Filter</option>
+          <option value="Other">อื่นๆ</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>จำนวนคงเหลือ</label>
+        <input type="number" id="edit-qty" min="0" value="0">
+      </div>
+      <div class="form-group">
+        <label>ขั้นต่ำแจ้งเตือน</label>
+        <input type="number" id="edit-minqty" min="0" value="5">
+      </div>
+      <div class="form-group full">
+        <label>ที่เก็บ</label>
+        <input type="text" id="edit-location" placeholder="เช่น A1-03">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveEditedPart()">💾 บันทึก</button>
+      <button class="btn btn-outline" onclick="closeEditModal()">ยกเลิก</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <span class="modal-close" onclick="closeModal()">✕</span>
+    <div class="modal-title">🛒 สั่งซื้อ / เติมสต็อก</div>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px">กรอกจำนวนที่ต้องการสั่งซื้อเพิ่ม</p>
+    <div class="form-group">
+      <label>อะไหล่</label>
+      <input type="text" id="modal-part-name" readonly style="opacity:.7">
+    </div>
+    <div class="form-group" style="margin-top:10px">
+      <label>จำนวนที่สั่งซื้อ</label>
+      <input type="number" id="modal-qty" placeholder="0" min="1">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="confirmRestock()">✅ ยืนยัน</button>
+      <button class="btn btn-outline" onclick="closeModal()">ยกเลิก</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

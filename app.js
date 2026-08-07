@@ -1,0 +1,1133 @@
+// ===== DATA (local storage only) =====
+const STORAGE_KEY = 'sparepart_v1';
+const CART_KEY = 'sparepart_cart_v1';
+
+const DEFAULT_PARTS = [];
+const DEFAULT_HISTORY = [];
+
+let parts = [];
+let history = [];
+let cart = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); // [{partId, qty}]
+let modalPartId = null;
+let editingPartId = null;
+let currentUser = JSON.parse(localStorage.getItem('sparepart_user') || 'null');
+let rolePermissions = JSON.parse(localStorage.getItem('sparepart_role_permissions') || '{"Admin":{"receive":true,"withdraw":true},"User":{"receive":false,"withdraw":true}}');
+
+function loadData() {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  const fallback = stored
+    ? JSON.parse(stored)
+    : { parts: [...DEFAULT_PARTS], history: [...DEFAULT_HISTORY] };
+
+  parts = (fallback.parts || [...DEFAULT_PARTS]).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+  history = fallback.history || [...DEFAULT_HISTORY];
+  return { parts, history };
+}
+
+function saveData(partsToSave, historyToSave) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ parts: partsToSave, history: historyToSave }));
+}
+
+function saveCart() {
+  localStorage.setItem(CART_KEY, JSON.stringify(cart));
+}
+
+function initializeData() {
+  loadData();
+}
+
+function makePlaceholderImage(text) {
+  const safeText = encodeURIComponent(text || 'Spare Part');
+  return `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><rect width='100%' height='100%' rx='16' fill='%23dbeafe'/><rect x='12' y='12' width='96' height='96' rx='12' fill='%23eff6ff'/><text x='60' y='70' text-anchor='middle' font-size='14' fill='%232563eb'>${safeText}</text></svg>`;
+}
+
+function isGeneratedPlaceholderImage(value) {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed.startsWith('data:image/svg+xml;utf8,<svg') && trimmed.includes('<text');
+}
+
+function sanitizeStoredImage(value) {
+  if (!value || typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (isGeneratedPlaceholderImage(trimmed)) return '';
+  return trimmed;
+}
+
+function looksLikeImageReference(value) {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('data:image/')) return true;
+  if (/^https?:\/\//i.test(trimmed)) return true;
+  if (/^[^\s]+\.[a-zA-Z0-9]{2,6}$/.test(trimmed)) return true;
+  if (/^[^\s]+\/[^^\s]+\.[a-zA-Z0-9]{2,6}$/.test(trimmed)) return true;
+  return false;
+}
+
+function normalizeImageUrl(value, fallbackText) {
+  if (!value || typeof value !== 'string') return makePlaceholderImage(fallbackText || 'Spare Part');
+  const trimmed = value.trim();
+  if (!trimmed) return makePlaceholderImage(fallbackText || 'Spare Part');
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return encodeURI(trimmed);
+  }
+  if (trimmed.startsWith('/')) {
+    return encodeURI(`${window.location.origin}${trimmed}`);
+  }
+  return makePlaceholderImage(fallbackText || 'Spare Part');
+}
+
+function getPartImage(p) {
+  return normalizeImageUrl(p.image, p.name || p.code || 'Spare Part');
+}
+
+function formatDisplayDate(value) {
+  if (!value) return '-';
+  const text = String(value).trim();
+  if (!text) return '-';
+  const normalized = text.includes('T') ? text.split('T')[0] : text;
+  const datePart = normalized.split(' ')[0];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return text;
+  const [year, month, day] = datePart.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function openImagePreview(src, event) {
+  if (event) event.stopPropagation();
+  const modal = document.getElementById('image-preview-modal');
+  const img = document.getElementById('image-preview-img');
+  if (!modal || !img) return;
+  img.src = src;
+  modal.classList.add('open');
+}
+
+function closeImagePreview(event) {
+  if (event) event.stopPropagation();
+  const modal = document.getElementById('image-preview-modal');
+  if (modal) modal.classList.remove('open');
+}
+
+function readImageFile(file, callback) {
+  if (!file) return callback('');
+  const reader = new FileReader();
+  reader.onload = () => callback(reader.result || '');
+  reader.readAsDataURL(file);
+}
+
+function toggleTheme() {
+  const body = document.body;
+  const isDark = body.classList.toggle('dark-mode');
+  const button = document.getElementById('theme-toggle');
+  if (button) {
+    button.textContent = isDark ? '☀︎' : '☾';
+    button.title = isDark ? 'สลับเป็นโหมดสว่าง' : 'สลับเป็นโหมดมืด';
+  }
+  localStorage.setItem('sparepart_theme', isDark ? 'dark' : 'light');
+}
+
+function applySavedTheme() {
+  const saved = localStorage.getItem('sparepart_theme');
+  const body = document.body;
+  const button = document.getElementById('theme-toggle');
+  if (saved === 'dark') {
+    body.classList.add('dark-mode');
+    if (button) { button.textContent = '☀︎'; button.title = 'สลับเป็นโหมดสว่าง'; }
+  } else {
+    body.classList.remove('dark-mode');
+    if (button) { button.textContent = '☾'; button.title = 'สลับเป็นโหมดมืด'; }
+  }
+}
+
+function showApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+  document.getElementById('user-chip').style.display = 'inline-flex';
+  document.getElementById('logout-btn').style.display = 'inline-flex';
+  document.getElementById('user-chip').innerHTML = `👤 ${currentUser.name} <span style="opacity:.7">(${currentUser.role})</span>`;
+  applyAccessState();
+  updateAlerts();
+  updateCartBadge();
+  renderDashboard();
+  renderInventory();
+  renderShop();
+  renderCart();
+  renderHistory();
+  renderLowStock();
+  renderRecommendations();
+}
+
+function showLogin() {
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('user-chip').style.display = 'none';
+  document.getElementById('logout-btn').style.display = 'none';
+  document.getElementById('login-email').value = '';
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-message').textContent = '';
+}
+
+function handleLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const demoUsers = {
+    'admin@example.com': { name: 'Admin', role: 'Admin', password: 'admin123' },
+    'user@example.com': { name: 'User', role: 'User', password: 'user123' }
+  };
+  const user = demoUsers[email];
+  if (!user || user.password !== password) {
+    document.getElementById('login-message').textContent = 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+    return;
+  }
+  currentUser = { email, ...user };
+  localStorage.setItem('sparepart_user', JSON.stringify(currentUser));
+  showApp();
+}
+
+function logout() {
+  currentUser = null;
+  localStorage.removeItem('sparepart_user');
+  showLogin();
+}
+
+function getEffectivePermissions() {
+  if (!currentUser) return { receive: false, withdraw: false };
+  if (currentUser.role === 'Admin') return { receive: true, withdraw: true };
+  return rolePermissions[currentUser.role] || rolePermissions.User || { receive: false, withdraw: true };
+}
+
+function canAccessAction(action) {
+  if (!currentUser) return false;
+  return getEffectivePermissions()[action] === true;
+}
+
+function applyAccessState() {
+  const receiveAllowed = canAccessAction('receive');
+  const withdrawAllowed = canAccessAction('withdraw');
+  const receiveNav = document.getElementById('nav-receive');
+  const shopNav = document.getElementById('nav-shop');
+  const cartNav = document.getElementById('nav-cart');
+  const receiveBlock = document.getElementById('receive-access-block');
+  const receiveWrapper = document.getElementById('receive-form-wrapper');
+  const shopBlock = document.getElementById('shop-access-block');
+  const shopWrapper = document.getElementById('shop-wrapper');
+  const cartBlock = document.getElementById('cart-access-block');
+  const cartWrapper = document.getElementById('cart-wrapper');
+
+  if (receiveNav) receiveNav.classList.toggle('disabled', !receiveAllowed);
+  if (shopNav) shopNav.classList.toggle('disabled', !withdrawAllowed);
+  if (cartNav) cartNav.classList.toggle('disabled', !withdrawAllowed);
+  if (receiveBlock) receiveBlock.classList.toggle('hidden', receiveAllowed);
+  if (receiveWrapper) receiveWrapper.classList.toggle('hidden', !receiveAllowed);
+  if (shopBlock) shopBlock.classList.toggle('hidden', withdrawAllowed);
+  if (shopWrapper) shopWrapper.classList.toggle('hidden', !withdrawAllowed);
+  if (cartBlock) cartBlock.classList.toggle('hidden', withdrawAllowed);
+  if (cartWrapper) cartWrapper.classList.toggle('hidden', !withdrawAllowed);
+
+  const permissionButton = document.getElementById('permission-toggle');
+  if (permissionButton) {
+    permissionButton.style.display = currentUser?.role === 'Admin' ? 'inline-flex' : 'none';
+  }
+}
+
+function openPermissionModal() {
+  if (!currentUser || currentUser.role !== 'Admin') {
+    toast('เฉพาะ Admin ที่สามารถกำหนดสิทธิ์ได้', 'error');
+    return;
+  }
+  const perms = rolePermissions.User || { receive: false, withdraw: true };
+  document.getElementById('perm-receive').checked = !!perms.receive;
+  document.getElementById('perm-withdraw').checked = !!perms.withdraw;
+  document.getElementById('permission-modal-bg').classList.add('open');
+}
+
+function closePermissionModal() {
+  document.getElementById('permission-modal-bg').classList.remove('open');
+}
+
+function savePermissions() {
+  rolePermissions.User = {
+    receive: document.getElementById('perm-receive').checked,
+    withdraw: document.getElementById('perm-withdraw').checked
+  };
+  localStorage.setItem('sparepart_role_permissions', JSON.stringify(rolePermissions));
+  applyAccessState();
+  closePermissionModal();
+  toast('อัปเดตสิทธิ์ของ User สำเร็จ', 'success');
+}
+
+// ===== NAVIGATION =====
+const PAGES = ['dashboard','shop','cart','inventory','receive','history','lowstock','recommend'];
+const TITLES = {
+  dashboard: 'Dashboard', shop: 'เลือกอะไหล่', cart: 'ตะกร้าเบิกของฉัน',
+  inventory: 'คลังอะไหล่ทั้งหมด', receive: 'รับอะไหล่เข้าคลัง',
+  history: 'ประวัติการเบิก', lowstock: 'แจ้งเตือนสต็อกต่ำ', recommend: 'ข้อแนะนำจากระบบ'
+};
+
+function navigate(page) {
+  if ((page === 'receive' && !canAccessAction('receive')) || ((page === 'shop' || page === 'cart') && !canAccessAction('withdraw'))) {
+    toast('คุณไม่มีสิทธิ์ใช้งานหน้านี้ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  PAGES.forEach(p => {
+    document.getElementById('page-' + p).classList.toggle('active', p === page);
+    document.querySelectorAll('.nav-item').forEach(el => {
+      if (el.getAttribute('onclick') === `navigate('${p}')`) el.classList.toggle('active', p === page);
+    });
+  });
+  document.getElementById('page-title').textContent = TITLES[page] || page;
+  if (page === 'dashboard') renderDashboard();
+  if (page === 'shop') renderShop();
+  if (page === 'cart') renderCart();
+  if (page === 'inventory') renderInventory();
+  if (page === 'history') renderHistory();
+  if (page === 'lowstock') renderLowStock();
+  if (page === 'recommend') renderRecommendations();
+}
+
+// ===== UTILS =====
+function getLowStockParts() { return parts.filter(p => p.qty <= p.minQty); }
+function getStockStatus(p) {
+  if (p.qty === 0) return { label:'หมดสต็อก', cls:'badge-red' };
+  if (p.qty <= p.minQty) return { label:'ใกล้หมด', cls:'badge-amber' };
+  return { label:'ปกติ', cls:'badge-green' };
+}
+function cartQtyFor(partId) {
+  const c = cart.find(x => x.partId === partId);
+  return c ? c.qty : 0;
+}
+function cartTotalItems() { return cart.reduce((s, c) => s + c.qty, 0); }
+
+function toast(msg, type = 'success') {
+  const w = document.getElementById('toast-wrap');
+  const el = document.createElement('div');
+  const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+  el.className = `toast ${type}`;
+  el.innerHTML = `${icon} ${msg}`;
+  w.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function updateAlerts() {
+  const low = getLowStockParts();
+  const n = low.length;
+  document.getElementById('low-badge').textContent = n;
+  document.getElementById('alert-count').textContent = n;
+  document.getElementById('alert-btn').style.display = n > 0 ? 'flex' : 'none';
+  document.getElementById('stat-lowstock').textContent = n;
+  document.getElementById('stat-total').textContent = parts.length;
+}
+
+function updateCartBadge() {
+  const n = cartTotalItems();
+  const navBadge = document.getElementById('cart-nav-badge');
+  const fabBadge = document.getElementById('cart-fab-badge');
+  if (navBadge) { navBadge.textContent = n; navBadge.style.display = n > 0 ? 'inline-flex' : 'none'; }
+  if (fabBadge) { fabBadge.textContent = n; fabBadge.style.display = n > 0 ? 'flex' : 'none'; }
+}
+
+// ===== DASHBOARD =====
+let chartMonthly, chartCategory;
+
+function renderDashboard() {
+  updateAlerts();
+
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  document.getElementById('stat-received').textContent = parts.filter(p => (p.updated||'').startsWith(thisMonth)).length;
+  document.getElementById('stat-withdrawn').textContent = history.filter(h => h.date.startsWith(thisMonth)).length;
+
+  const low = getLowStockParts();
+  document.getElementById('dash-low-count').textContent = `${low.length} รายการ`;
+  const lsList = document.getElementById('dash-lowstock-list');
+  lsList.innerHTML = low.length === 0
+    ? '<div class="empty"><div class="empty-icon">✅</div>ไม่มีอะไหล่ใกล้หมด</div>'
+    : low.map(p => {
+        const pct = Math.min(100, Math.round((p.qty / p.minQty) * 100));
+        const color = p.qty === 0 ? 'var(--red)' : 'var(--amber)';
+        return `<div class="low-stock-item">
+          <div><div class="ls-name">${p.name}</div><div class="ls-code">${p.code}</div></div>
+          <div class="ls-bar-wrap">
+            <div class="ls-bar"><div class="ls-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          </div>
+          <span style="font-family:var(--mono);font-size:13px;color:${color};min-width:32px;text-align:right">${p.qty}</span>
+        </div>`;
+      }).join('');
+
+  const rec = [...history].sort((a,b) => b.date.localeCompare(a.date)).slice(0,5);
+  const rList = document.getElementById('dash-recent-withdrawals');
+  rList.innerHTML = rec.length === 0
+    ? '<div class="empty"><div class="empty-icon">📋</div>ยังไม่มีประวัติการเบิก</div>'
+    : `<div class="table-wrap"><table>
+        <thead><tr><th>วันที่</th><th>อะไหล่</th><th>จำนวน</th><th>เครื่องจักร</th></tr></thead>
+        <tbody>${rec.map(h => `<tr>
+          <td style="color:var(--muted)">${h.date}</td>
+          <td>${h.partName}</td>
+          <td><span class="badge badge-amber">${h.qty}</span></td>
+          <td style="font-family:var(--mono);font-size:12px">${h.machine}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(); d.setMonth(d.getMonth() - i);
+    months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+  }
+  const monthlyData = months.map(m => history.filter(h => h.date.startsWith(m)).reduce((s,h) => s + h.qty, 0));
+  const monthLabels = months.map(m => { const d = new Date(m+'-01'); return d.toLocaleDateString('th-TH', {month:'short'}); });
+
+  const gridColor = getComputedStyle(document.body).getPropertyValue('--divider') || 'rgba(37,99,235,0.1)';
+  const tickColor = getComputedStyle(document.body).getPropertyValue('--muted') || '#6b7fa3';
+
+  if (chartMonthly) chartMonthly.destroy();
+  chartMonthly = new Chart(document.getElementById('chart-monthly'), {
+    type: 'bar',
+    data: {
+      labels: monthLabels,
+      datasets: [{ label: 'จำนวนเบิก', data: monthlyData, backgroundColor: 'rgba(37,99,235,0.75)', borderRadius: 6 }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { x: { ticks: { color: tickColor }, grid: { display: false } }, y: { ticks: { color: tickColor }, grid: { color: gridColor } } } }
+  });
+
+  const cats = {};
+  parts.forEach(p => { cats[p.category] = (cats[p.category] || 0) + p.qty; });
+  const COLORS = ['#2563eb','#3b82f6','#60a5fa','#0ea5e9','#38bdf8','#93c5fd','#1d4ed8','#0284c7'];
+  if (chartCategory) chartCategory.destroy();
+  chartCategory = new Chart(document.getElementById('chart-category'), {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(cats),
+      datasets: [{ data: Object.values(cats), backgroundColor: COLORS.slice(0, Object.keys(cats).length), borderWidth: 0 }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: tickColor, boxWidth: 12, padding: 8, font: { size: 11 } } } } }
+  });
+}
+
+// ===== SHOP (Shopee/Lazada-style catalog with add-to-cart) =====
+function renderShop() {
+  const q = (document.getElementById('shop-search')?.value || '').toLowerCase();
+  const cat = document.getElementById('shop-cat')?.value || '';
+
+  const cats = [...new Set(parts.map(p => p.category))].sort();
+  const catSel = document.getElementById('shop-cat');
+  if (catSel) {
+    const curCat = catSel.value;
+    catSel.innerHTML = '<option value="">ทุกประเภท</option>' + cats.map(c => `<option value="${c}" ${c===curCat?'selected':''}>${c}</option>`).join('');
+  }
+
+  const filtered = parts.filter(p =>
+    (!q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q)) &&
+    (!cat || p.category === cat)
+  );
+
+  const grid = document.getElementById('shop-grid');
+  if (!grid) return;
+  grid.innerHTML = filtered.length === 0
+    ? `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">🛒</div>ไม่พบอะไหล่ที่ค้นหา</div>`
+    : filtered.map(p => {
+        const st = getStockStatus(p);
+        const inCart = cartQtyFor(p.id);
+        const outOfStock = p.qty === 0;
+        const maxQty = Math.max(0, p.qty - inCart);
+        return `<div class="product-card ${outOfStock ? 'product-out' : ''}">
+          <div class="product-img-wrap">
+            <img src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">
+            <span class="badge ${st.cls} product-stock-badge">${st.label}</span>
+            <span class="badge badge-blue product-cat-badge">${p.category}</span>
+          </div>
+          <div class="product-body">
+            <div class="product-name">${p.name}</div>
+            <div class="product-code">${p.code}</div>
+            <div class="product-stock-line">คงเหลือ <b>${p.qty}</b> ชิ้น · ${p.location || '-'}</div>
+            ${inCart > 0 ? `<div class="in-cart-pill">🛒 ในตะกร้า ${inCart} ชิ้น</div>` : ''}
+            <div class="product-footer">
+              ${outOfStock ? `<button class="btn btn-outline btn-sm add-cart-btn" disabled>หมดสต็อก</button>` : `
+              <div class="qty-stepper">
+                <button type="button" onclick="stepShopQty(${p.id}, -1)">−</button>
+                <input type="number" id="shop-qty-${p.id}" value="1" min="1" max="${maxQty}">
+                <button type="button" onclick="stepShopQty(${p.id}, 1)">+</button>
+              </div>
+              <button class="btn btn-primary btn-sm add-cart-btn" ${maxQty === 0 ? 'disabled' : ''} onclick="addToCart(${p.id})">🛒 ใส่ตะกร้า</button>
+              `}
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+}
+
+function stepShopQty(partId, delta) {
+  const input = document.getElementById(`shop-qty-${partId}`);
+  if (!input) return;
+  const max = parseInt(input.max) || 1;
+  let val = (parseInt(input.value) || 1) + delta;
+  val = Math.max(1, Math.min(max, val));
+  input.value = val;
+}
+
+function addToCart(partId) {
+  const p = parts.find(x => x.id === partId);
+  if (!p) return;
+  const input = document.getElementById(`shop-qty-${partId}`);
+  const addQty = Math.max(1, parseInt(input?.value) || 1);
+  const already = cartQtyFor(partId);
+  const available = p.qty - already;
+  if (available <= 0) { toast('สต็อกไม่พอสำหรับอะไหล่นี้แล้ว', 'error'); return; }
+  const finalQty = Math.min(addQty, available);
+
+  const existing = cart.find(c => c.partId === partId);
+  if (existing) existing.qty += finalQty;
+  else cart.push({ partId, qty: finalQty });
+
+  saveCart();
+  updateCartBadge();
+  renderShop();
+  toast(`ใส่ "${p.name}" ${finalQty} ชิ้น ลงตะกร้าแล้ว`, 'success');
+}
+
+// ===== CART / CHECKOUT =====
+function renderCart() {
+  const list = document.getElementById('cart-list');
+  const emptyState = document.getElementById('cart-empty');
+  const summary = document.getElementById('cart-summary');
+  const checkoutForm = document.getElementById('cart-checkout-form');
+  if (!list) return;
+
+  // drop any cart lines whose part no longer exists
+  cart = cart.filter(c => parts.some(p => p.id === c.partId));
+  saveCart();
+
+  if (cart.length === 0) {
+    list.innerHTML = '';
+    if (emptyState) emptyState.classList.remove('hidden');
+    if (summary) summary.classList.add('hidden');
+    if (checkoutForm) checkoutForm.classList.add('hidden');
+    updateCartBadge();
+    return;
+  }
+
+  if (emptyState) emptyState.classList.add('hidden');
+  if (summary) summary.classList.remove('hidden');
+  if (checkoutForm) checkoutForm.classList.remove('hidden');
+
+  list.innerHTML = cart.map(c => {
+    const p = parts.find(x => x.id === c.partId);
+    if (!p) return '';
+    const st = getStockStatus(p);
+    return `<div class="cart-row">
+      <img src="${getPartImage(p)}" alt="${p.name}" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">
+      <div class="cart-row-info">
+        <div class="cart-row-name">${p.name}</div>
+        <div class="cart-row-meta">${p.code} · คงเหลือในคลัง ${p.qty} <span class="badge ${st.cls}" style="margin-left:6px">${st.label}</span></div>
+      </div>
+      <div class="cart-row-actions">
+        <div class="qty-stepper">
+          <button type="button" onclick="stepCartQty(${p.id}, -1)">−</button>
+          <input type="number" value="${c.qty}" min="1" max="${p.qty}" onchange="setCartQty(${p.id}, this.value)">
+          <button type="button" onclick="stepCartQty(${p.id}, 1)">+</button>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="removeFromCart(${p.id})">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('cart-total-count').textContent = cartTotalItems();
+  updateCartBadge();
+}
+
+function stepCartQty(partId, delta) {
+  const p = parts.find(x => x.id === partId);
+  const c = cart.find(x => x.partId === partId);
+  if (!p || !c) return;
+  c.qty = Math.max(1, Math.min(p.qty, c.qty + delta));
+  saveCart();
+  renderCart();
+}
+
+function setCartQty(partId, value) {
+  const p = parts.find(x => x.id === partId);
+  const c = cart.find(x => x.partId === partId);
+  if (!p || !c) return;
+  let qty = parseInt(value) || 1;
+  qty = Math.max(1, Math.min(p.qty, qty));
+  c.qty = qty;
+  saveCart();
+  renderCart();
+}
+
+function removeFromCart(partId) {
+  cart = cart.filter(c => c.partId !== partId);
+  saveCart();
+  renderCart();
+  renderShop();
+  toast('นำออกจากตะกร้าแล้ว', 'info');
+}
+
+function clearCart() {
+  if (cart.length === 0) return;
+  const ok = window.confirm('ล้างตะกร้าทั้งหมดใช่หรือไม่?');
+  if (!ok) return;
+  cart = [];
+  saveCart();
+  renderCart();
+  renderShop();
+  toast('ล้างตะกร้าแล้ว', 'info');
+}
+
+function checkoutCart() {
+  if (!canAccessAction('withdraw')) {
+    toast('คุณไม่มีสิทธิ์เบิกอะไหล่ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+  if (cart.length === 0) { toast('ตะกร้าว่างเปล่า', 'error'); return; }
+
+  const withdrawer = document.getElementById('cart-withdrawer').value.trim();
+  const date = document.getElementById('cart-date').value;
+  const approver = document.getElementById('cart-approver').value;
+  const machine = document.getElementById('cart-machine').value.trim();
+
+  if (!withdrawer || !date || !machine) {
+    toast('กรุณากรอกข้อมูลผู้เบิก วันที่ และเครื่องจักรให้ครบ', 'error');
+    return;
+  }
+
+  // validate stock for every line before committing anything
+  for (const c of cart) {
+    const p = parts.find(x => x.id === c.partId);
+    if (!p) { toast('พบรายการอะไหล่ที่ไม่มีอยู่แล้วในตะกร้า กรุณาลองใหม่', 'error'); return; }
+    if (c.qty > p.qty) { toast(`สต็อก "${p.name}" ไม่พอ คงเหลือเพียง ${p.qty} ชิ้น`, 'error'); return; }
+  }
+
+  let nextHistId = history.length ? Math.max(...history.map(h => h.id)) + 1 : 1;
+  const itemNames = [];
+  cart.forEach(c => {
+    const p = parts.find(x => x.id === c.partId);
+    p.qty -= c.qty;
+    p.updated = date;
+    history.push({ id: nextHistId++, date, partId: p.id, partCode: p.code, partName: p.name, qty: c.qty, withdrawer, machine, approver });
+    itemNames.push(`${p.name} x${c.qty}`);
+  });
+
+  saveData(parts, history);
+  cart = [];
+  saveCart();
+
+  updateAlerts();
+  renderShop();
+  renderCart();
+  renderInventory();
+  renderLowStock();
+  renderDashboard();
+  renderHistory();
+  clearCartCheckoutForm();
+
+  toast(`เบิกสำเร็จ: ${itemNames.join(', ')}`, 'success');
+  navigate('history');
+}
+
+function clearCartCheckoutForm() {
+  document.getElementById('cart-withdrawer').value = '';
+  document.getElementById('cart-machine').value = '';
+  document.getElementById('cart-date').value = new Date().toISOString().split('T')[0];
+}
+
+// ===== INVENTORY (admin table) =====
+function renderInventory() {
+  const q = (document.getElementById('inv-search').value || '').toLowerCase();
+  const cat = document.getElementById('inv-cat').value;
+
+  const cats = [...new Set(parts.map(p => p.category))].sort();
+  const catSel = document.getElementById('inv-cat');
+  const curCat = catSel.value;
+  catSel.innerHTML = '<option value="">ทุกประเภท</option>' + cats.map(c => `<option value="${c}" ${c===curCat?'selected':''}>${c}</option>`).join('');
+
+  const filtered = parts.filter(p =>
+    (!q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q)) &&
+    (!cat || p.category === cat)
+  );
+
+  const tbody = document.getElementById('inv-tbody');
+  tbody.innerHTML = filtered.length === 0
+    ? `<tr><td colspan="10"><div class="empty"><div class="empty-icon">📦</div>ไม่พบรายการ</div></td></tr>`
+    : filtered.map(p => {
+        const st = getStockStatus(p);
+        return `<tr>
+          <td><span style="font-family:var(--mono);font-size:12px;color:var(--accent)">${p.code}</span></td>
+          <td><img class="thumb" src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';"></td>
+          <td>${p.name}</td>
+          <td><span class="badge badge-blue">${p.category}</span></td>
+          <td style="font-family:var(--mono);font-weight:700">${p.qty}</td>
+          <td style="color:var(--muted)">${p.minQty}</td>
+          <td><span class="badge ${st.cls}">${st.label}</span></td>
+          <td style="color:var(--muted)">${p.location}</td>
+          <td style="color:var(--muted);font-size:12px">${formatDisplayDate(p.updated)}</td>
+          <td>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-outline btn-sm" onclick="openEditPart(${p.id})">✏️ แก้ไข</button>
+              <button class="btn btn-danger btn-sm" onclick="deletePart(${p.id})">🗑️ ลบ</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+}
+
+function openAddPart() {
+  if (!canAccessAction('receive')) {
+    toast('คุณไม่มีสิทธิ์เพิ่มอะไหล่ใหม่ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  editingPartId = null;
+  document.getElementById('edit-modal-title').textContent = '➕ เพิ่มอะไหล่ใหม่';
+  document.getElementById('edit-name').value = '';
+  document.getElementById('edit-code').value = '';
+  document.getElementById('edit-category').value = 'Bearing';
+  document.getElementById('edit-qty').value = '0';
+  document.getElementById('edit-minqty').value = '5';
+  document.getElementById('edit-location').value = '';
+  document.getElementById('edit-image-url').value = '';
+  document.getElementById('edit-image-file').value = '';
+  document.getElementById('edit-image-preview').innerHTML = 'ไม่มีรูปภาพ';
+  document.getElementById('edit-modal-bg').classList.add('open');
+}
+
+function openEditPart(id) {
+  if (!canAccessAction('receive')) {
+    toast('คุณไม่มีสิทธิ์แก้ไขข้อมูลอะไหล่ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  const p = parts.find(x => x.id === id);
+  if (!p) return;
+  editingPartId = id;
+  document.getElementById('edit-modal-title').textContent = '✏️ แก้ไขข้อมูลอะไหล่';
+  document.getElementById('edit-name').value = p.name;
+  document.getElementById('edit-code').value = p.code;
+  document.getElementById('edit-category').value = p.category;
+  document.getElementById('edit-qty').value = p.qty;
+  document.getElementById('edit-minqty').value = p.minQty;
+  document.getElementById('edit-location').value = p.location;
+  document.getElementById('edit-image-url').value = isGeneratedPlaceholderImage(p.image) ? '' : (p.image || '');
+  document.getElementById('edit-image-file').value = '';
+  const preview = document.getElementById('edit-image-preview');
+  preview.innerHTML = `<img src="${getPartImage(p)}" alt="${p.name}" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">`;
+  document.getElementById('edit-modal-bg').classList.add('open');
+}
+
+function closeEditModal() {
+  editingPartId = null;
+  document.getElementById('edit-modal-bg').classList.remove('open');
+}
+
+function saveEditedPart() {
+  if (!canAccessAction('receive')) {
+    toast('คุณไม่มีสิทธิ์บันทึกข้อมูลอะไหล่ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  const name = document.getElementById('edit-name').value.trim();
+  const code = document.getElementById('edit-code').value.trim();
+  const category = document.getElementById('edit-category').value;
+  const qty = parseInt(document.getElementById('edit-qty').value, 10);
+  const minQty = parseInt(document.getElementById('edit-minqty').value, 10);
+  const location = document.getElementById('edit-location').value.trim();
+  const imageUrl = document.getElementById('edit-image-url').value.trim();
+  const imageFile = document.getElementById('edit-image-file').files[0];
+
+  if (!name || !code || !location) {
+    toast('กรุณากรอกชื่อ รหัส และที่เก็บให้ครบ', 'error');
+    return;
+  }
+  if (isNaN(qty) || qty < 0 || isNaN(minQty) || minQty < 0) {
+    toast('จำนวนและขั้นต่ำต้องเป็นตัวเลขที่ถูกต้อง', 'error');
+    return;
+  }
+
+  const duplicate = parts.find(p => p.id !== editingPartId && p.code.toLowerCase() === code.toLowerCase());
+  if (duplicate) {
+    toast('รหัสอะไหล่ซ้ำกับรายการที่มีอยู่แล้ว', 'error');
+    return;
+  }
+
+  const finishSave = (imageValue) => {
+    const finalImageValue = imageValue && looksLikeImageReference(imageValue) ? imageValue : (imageValue && imageValue.startsWith('data:image/') ? imageValue : '');
+
+    if (editingPartId) {
+      const p = parts.find(x => x.id === editingPartId);
+      if (!p) return;
+      p.name = name;
+      p.code = code;
+      p.category = category;
+      p.qty = qty;
+      p.minQty = minQty;
+      p.location = location;
+      p.image = finalImageValue;
+      p.updated = new Date().toISOString().split('T')[0];
+      toast(`อัปเดตข้อมูล "${name}" สำเร็จ`, 'success');
+    } else {
+      const newId = parts.length ? Math.max(...parts.map(p => p.id)) + 1 : 1;
+      const newPart = { id: newId, code, name, category, qty, minQty, location, updated: new Date().toISOString().split('T')[0], image: finalImageValue };
+      parts.push(newPart);
+      toast(`เพิ่ม "${name}" เข้าคลังสำเร็จ`, 'success');
+    }
+
+    saveData(parts, history);
+    updateAlerts();
+    renderInventory();
+    renderShop();
+    renderLowStock();
+    renderDashboard();
+    renderHistory();
+    closeEditModal();
+  };
+
+  if (imageFile) {
+    readImageFile(imageFile, (data) => finishSave(data || imageUrl));
+  } else {
+    finishSave(imageUrl);
+  }
+}
+
+function deletePart(id) {
+  if (!canAccessAction('receive')) {
+    toast('คุณไม่มีสิทธิ์ลบข้อมูลอะไหล่ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  const p = parts.find(x => x.id === id);
+  if (!p) return;
+  const ok = window.confirm(`ลบรายการ ${p.name} ออกจากคลังใช่หรือไม่`);
+  if (!ok) return;
+
+  parts = parts.filter(x => x.id !== id);
+  history = history.filter(h => h.partId !== id);
+  cart = cart.filter(c => c.partId !== id);
+  saveCart();
+  saveData(parts, history);
+  updateAlerts();
+  renderInventory();
+  renderShop();
+  renderCart();
+  renderLowStock();
+  renderDashboard();
+  renderHistory();
+  toast(`ลบ ${p.name} ออกจากคลังเรียบร้อยแล้ว`, 'success');
+}
+
+// ===== RECEIVE =====
+function receivePart() {
+  if (!canAccessAction('receive')) {
+    toast('คุณไม่มีสิทธิ์รับอะไหล่เข้า โปรดติดต่อ Admin', 'error');
+    return;
+  }
+
+  const name = document.getElementById('r-name').value.trim();
+  const code = document.getElementById('r-code').value.trim();
+  const category = document.getElementById('r-category').value;
+  const qty = parseInt(document.getElementById('r-qty').value);
+  const minQty = parseInt(document.getElementById('r-minqty').value) || 5;
+  const location = document.getElementById('r-location').value.trim();
+  const receiver = document.getElementById('r-receiver').value.trim();
+  const date = document.getElementById('r-date').value;
+  const imageUrl = document.getElementById('r-image-url').value.trim();
+  const imageFile = document.getElementById('r-image-file').files[0];
+
+  if (!name || !code || !qty || !location || !receiver || !date) {
+    toast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error'); return;
+  }
+  if (isNaN(qty) || qty < 1) { toast('จำนวนต้องมากกว่า 0', 'error'); return; }
+
+  const existing = parts.find(p => p.code === code);
+
+  const finishSave = (imageValue) => {
+    let finalImageValue = existing ? (existing.image || '') : '';
+    if (imageValue && (imageValue.startsWith('data:image/') || looksLikeImageReference(imageValue))) {
+      finalImageValue = imageValue;
+    }
+
+    if (existing) {
+      existing.qty += qty;
+      existing.updated = date;
+      existing.image = finalImageValue;
+      toast(`เติมสต็อก "${existing.name}" +${qty} ชิ้น (คงเหลือ ${existing.qty})`, 'success');
+    } else {
+      const newId = parts.length ? Math.max(...parts.map(p => p.id)) + 1 : 1;
+      const newPart = { id: newId, code, name, category, qty, minQty, location, updated: date, image: finalImageValue };
+      parts.push(newPart);
+      toast(`เพิ่ม "${name}" เข้าคลังสำเร็จ`, 'success');
+    }
+
+    saveData(parts, history);
+    updateAlerts();
+    renderInventory();
+    renderShop();
+    renderLowStock();
+    renderDashboard();
+    clearReceiveForm();
+  };
+
+  if (imageFile) {
+    readImageFile(imageFile, (data) => finishSave(data || imageUrl));
+  } else {
+    finishSave(imageUrl);
+  }
+}
+
+function clearReceiveForm() {
+  ['r-name','r-code','r-qty','r-location','r-receiver','r-image-url'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('r-image-file').value = '';
+  document.getElementById('r-image-preview').innerHTML = 'ไม่มีรูปภาพ';
+  document.getElementById('r-minqty').value = '5';
+  document.getElementById('r-date').value = new Date().toISOString().split('T')[0];
+}
+
+// ===== HISTORY =====
+function renderHistory() {
+  const q = (document.getElementById('hist-search').value || '').toLowerCase();
+  const from = document.getElementById('hist-date-from').value;
+  const to = document.getElementById('hist-date-to').value;
+  const machine = document.getElementById('hist-machine').value;
+
+  const machines = [...new Set(history.map(h => h.machine))].sort();
+  const macSel = document.getElementById('hist-machine');
+  const curMac = macSel.value;
+  macSel.innerHTML = '<option value="">ทุกเครื่องจักร</option>' + machines.map(m => `<option value="${m}" ${m===curMac?'selected':''}>${m}</option>`).join('');
+
+  const filtered = [...history].filter(h =>
+    (!q || h.partName.toLowerCase().includes(q) || h.partCode.toLowerCase().includes(q) || h.machine.toLowerCase().includes(q) || h.withdrawer.toLowerCase().includes(q)) &&
+    (!from || h.date >= from) && (!to || h.date <= to) &&
+    (!machine || h.machine === machine)
+  ).sort((a,b) => b.date.localeCompare(a.date));
+
+  const tbody = document.getElementById('hist-tbody');
+  tbody.innerHTML = filtered.length === 0
+    ? `<tr><td colspan="8"><div class="empty"><div class="empty-icon">📋</div>ไม่พบประวัติ</div></td></tr>`
+    : filtered.map((h,i) => `<tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td>${h.date}</td>
+        <td style="font-family:var(--mono);font-size:12px;color:var(--accent)">${h.partCode}</td>
+        <td>${h.partName}</td>
+        <td><span class="badge badge-amber">${h.qty}</span></td>
+        <td>${h.withdrawer}</td>
+        <td style="font-family:var(--mono);font-size:12px">${h.machine}</td>
+        <td style="color:var(--muted)">${h.approver}</td>
+      </tr>`).join('');
+}
+
+// ===== LOW STOCK =====
+function renderLowStock() {
+  const low = getLowStockParts();
+  document.getElementById('lowstock-count').textContent = `${low.length} รายการ`;
+  const tbody = document.getElementById('ls-tbody');
+  tbody.innerHTML = low.length === 0
+    ? `<tr><td colspan="8"><div class="empty"><div class="empty-icon">✅</div>ทุกรายการมีสต็อกเพียงพอ</div></td></tr>`
+    : low.map(p => {
+        const st = getStockStatus(p);
+        return `<tr>
+          <td style="font-family:var(--mono);font-size:12px;color:var(--accent)">${p.code}</td>
+          <td>${p.name}</td>
+          <td><span class="badge badge-blue">${p.category}</span></td>
+          <td style="font-family:var(--mono);font-weight:700;color:var(--red)">${p.qty}</td>
+          <td style="color:var(--muted)">${p.minQty}</td>
+          <td style="color:var(--muted)">${p.location}</td>
+          <td><span class="badge ${st.cls}">${st.label}</span></td>
+          <td><button class="btn btn-outline btn-sm" onclick="openRestock(${p.id})">🛒 สั่งซื้อ</button></td>
+        </tr>`;
+      }).join('');
+}
+
+function openRestock(id) {
+  const p = parts.find(x => x.id === id);
+  if (!p) return;
+  modalPartId = id;
+  document.getElementById('modal-part-name').value = `${p.name} (${p.code}) — คงเหลือ ${p.qty}`;
+  document.getElementById('modal-qty').value = '';
+  document.getElementById('modal-bg').classList.add('open');
+}
+function closeModal() { document.getElementById('modal-bg').classList.remove('open'); modalPartId = null; }
+function confirmRestock() {
+  const qty = parseInt(document.getElementById('modal-qty').value);
+  if (!qty || qty < 1) { toast('กรุณาระบุจำนวน', 'error'); return; }
+  const p = parts.find(x => x.id === modalPartId);
+  if (!p) return;
+  p.qty += qty;
+  p.updated = new Date().toISOString().split('T')[0];
+  saveData(parts, history);
+  updateAlerts();
+  renderShop();
+  toast(`เติมสต็อก "${p.name}" +${qty} ชิ้น`, 'success');
+  closeModal();
+  renderLowStock();
+}
+
+// ===== RECOMMENDATIONS =====
+function renderRecommendations() {
+  const pairs = {};
+  const machineFreq = {};
+  history.forEach(h => {
+    const key = `${h.machine}|${h.date}`;
+    if (!machineFreq[h.machine]) machineFreq[h.machine] = {};
+    machineFreq[h.machine][h.partCode] = (machineFreq[h.machine][h.partCode] || 0) + 1;
+  });
+
+  const bySession = {};
+  history.forEach(h => {
+    const k = `${h.date}|${h.machine}`;
+    if (!bySession[k]) bySession[k] = [];
+    bySession[k].push(h.partName);
+  });
+  const pairCount = {};
+  Object.values(bySession).forEach(arr => {
+    for (let i = 0; i < arr.length; i++) for (let j = i+1; j < arr.length; j++) {
+      const k = [arr[i],arr[j]].sort().join(' + ');
+      pairCount[k] = (pairCount[k] || 0) + 1;
+    }
+  });
+
+  const topPairs = Object.entries(pairCount).sort((a,b) => b[1]-a[1]).slice(0,5);
+  const pairList = document.getElementById('rec-pair-list');
+  pairList.innerHTML = topPairs.length === 0
+    ? '<div class="empty"><div class="empty-icon">🔗</div>ยังไม่มีข้อมูลเพียงพอ</div>'
+    : topPairs.map(([k,n]) => `<div class="rec-item">
+        <div class="rec-icon" style="background:var(--accent-soft);color:var(--accent)">🔗</div>
+        <div class="rec-body">
+          <div class="rec-title">${k}</div>
+          <div class="rec-desc">มักเบิกพร้อมกัน ${n} ครั้ง</div>
+        </div>
+      </div>`).join('');
+
+  const machineList = document.getElementById('rec-machine-list');
+  const topMachines = Object.entries(machineFreq)
+    .map(([m, parts]) => ({ machine: m, top: Object.entries(parts).sort((a,b) => b[1]-a[1])[0] }))
+    .filter(x => x.top).sort((a,b) => b.top[1]-a.top[1]).slice(0,5);
+  machineList.innerHTML = topMachines.length === 0
+    ? '<div class="empty"><div class="empty-icon">⚙️</div>ยังไม่มีข้อมูลเพียงพอ</div>'
+    : topMachines.map(x => `<div class="rec-item">
+        <div class="rec-icon" style="background:rgba(59,130,246,0.12);color:var(--accent2)">⚙️</div>
+        <div class="rec-body">
+          <div class="rec-title">${x.machine}</div>
+          <div class="rec-desc">ใช้ <b>${x.top[0]}</b> บ่อยที่สุด (${x.top[1]} ครั้ง)</div>
+        </div>
+      </div>`).join('');
+
+  const adviceList = document.getElementById('rec-advice-list');
+  const low = getLowStockParts();
+  const highFreqLow = low.filter(p => {
+    const freq = history.filter(h => h.partCode === p.code).reduce((s,h) => s+h.qty, 0);
+    return freq > 0;
+  });
+  const advices = [
+    ...highFreqLow.map(p => ({
+      icon:'🔴', color:'var(--red)', bg:'rgba(220,38,38,0.08)',
+      title:`${p.name} — สต็อกต่ำแต่มีการเบิกสูง`,
+      desc:`คงเหลือ ${p.qty} ชิ้น (ต่ำกว่าขั้นต่ำ ${p.minQty}) ควรสั่งซื้อโดยด่วน`
+    })),
+    ...(topMachines.slice(0,2).map(x => ({
+      icon:'⚙️', color:'var(--accent2)', bg:'rgba(59,130,246,0.08)',
+      title:`${x.machine} — ควรตรวจสอบเชิงป้องกัน`,
+      desc:`เครื่องนี้มีประวัติเบิก ${x.top[0]} บ่อย แนะนำให้ตั้ง PM schedule`
+    }))),
+    { icon:'💡', color:'var(--amber)', bg:'rgba(217,119,6,0.08)',
+      title:'เชื่อมกับระบบ PM', desc:'ข้อมูลการเบิกอะไหล่สามารถนำไปเชื่อมกับระบบ Preventive Maintenance เพื่อคำนวณต้นทุนการซ่อมบำรุงต่อเครื่องได้' }
+  ];
+  adviceList.innerHTML = advices.map(a => `<div class="rec-item">
+    <div class="rec-icon" style="background:${a.bg};color:${a.color}">${a.icon}</div>
+    <div class="rec-body">
+      <div class="rec-title">${a.title}</div>
+      <div class="rec-desc">${a.desc}</div>
+    </div>
+  </div>`).join('');
+}
+
+// ===== EXPORT =====
+function exportExcel() {
+  const rows = [['รหัส','ชื่ออะไหล่','ประเภท','จำนวน','ขั้นต่ำ','ที่เก็บ','อัปเดต']];
+  parts.forEach(p => rows.push([p.code, p.name, p.category, p.qty, p.minQty, p.location, p.updated]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'คลังอะไหล่');
+  XLSX.writeFile(wb, 'spare_parts_inventory.xlsx');
+  toast('Export Excel สำเร็จ', 'success');
+}
+
+function exportPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.text('Spare Part Inventory', 14, 16);
+  doc.autoTable({
+    head: [['รหัส','ชื่ออะไหล่','ประเภท','จำนวน','ขั้นต่ำ','ที่เก็บ']],
+    body: parts.map(p => [p.code, p.name, p.category, p.qty, p.minQty, p.location]),
+    startY: 22
+  });
+  doc.save('spare_parts_inventory.pdf');
+  toast('Export PDF สำเร็จ', 'success');
+}
+
+function exportHistoryExcel() {
+  const rows = [['#','วันที่','รหัส','ชื่ออะไหล่','จำนวน','คนเบิก','เครื่องจักร','ผู้อนุมัติ']];
+  [...history].sort((a,b) => b.date.localeCompare(a.date)).forEach((h,i) =>
+    rows.push([i+1, h.date, h.partCode, h.partName, h.qty, h.withdrawer, h.machine, h.approver]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'ประวัติการเบิก');
+  XLSX.writeFile(wb, 'withdrawal_history.xlsx');
+  toast('Export Excel สำเร็จ', 'success');
+}
+
+function exportHistoryPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.text('Withdrawal History', 14, 16);
+  doc.autoTable({
+    head: [['วันที่','รหัส','ชื่ออะไหล่','จำนวน','คนเบิก','เครื่องจักร']],
+    body: [...history].sort((a,b) => b.date.localeCompare(a.date)).map(h => [h.date, h.partCode, h.partName, h.qty, h.withdrawer, h.machine]),
+    startY: 22
+  });
+  doc.save('withdrawal_history.pdf');
+  toast('Export PDF สำเร็จ', 'success');
+}
+
+// ===== INIT =====
+document.getElementById('current-date').textContent = new Date().toLocaleDateString('th-TH', { weekday:'short', year:'numeric', month:'long', day:'numeric' });
+document.getElementById('r-date').value = new Date().toISOString().split('T')[0];
+document.getElementById('cart-date').value = new Date().toISOString().split('T')[0];
+
+function updateImagePreview(previewId, urlInputId, fileInputId) {
+  const preview = document.getElementById(previewId);
+  if (!preview) return;
+  const url = document.getElementById(urlInputId)?.value.trim() || '';
+  const file = document.getElementById(fileInputId)?.files[0];
+  if (file) {
+    readImageFile(file, (data) => {
+      preview.innerHTML = data ? `<img src="${data}" alt="preview">` : 'ไม่มีรูปภาพ';
+    });
+  } else if (url) {
+    preview.innerHTML = `<img src="${url}" alt="preview">`;
+  } else {
+    preview.innerHTML = 'ไม่มีรูปภาพ';
+  }
+}
+
+['edit-image-url','edit-image-file','r-image-url','r-image-file'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('change', () => {
+      const previewId = id.startsWith('r-') ? 'r-image-preview' : 'edit-image-preview';
+      const urlInputId = id.startsWith('r-') ? 'r-image-url' : 'edit-image-url';
+      const fileInputId = id.startsWith('r-') ? 'r-image-file' : 'edit-image-file';
+      updateImagePreview(previewId, urlInputId, fileInputId);
+    });
+  }
+});
+
+function bootstrap() {
+  applySavedTheme();
+  initializeData();
+  if (currentUser) {
+    showApp();
+  } else {
+    showLogin();
+  }
+}
+
+bootstrap();
