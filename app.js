@@ -1,19 +1,45 @@
-// ===== DATA (local storage only) =====
+// ===== DATA =====
 const STORAGE_KEY = 'sparepart_v1';
 const CART_KEY = 'sparepart_cart_v1';
+const DATA_DOCUMENT = 'warehouse/data';
+const CLOUDINARY_CLOUD_NAME = 's52qoaji';
+const CLOUDINARY_UPLOAD_PRESET = 's52qoaji';
+const auth = firebase.auth();
+const db = firebase.firestore();
 
 const DEFAULT_PARTS = [];
 const DEFAULT_HISTORY = [];
 
 let parts = [];
 let history = [];
+let receipts = [];
 let cart = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); // [{partId, qty}]
 let modalPartId = null;
 let editingPartId = null;
+let approvers = [];
+let approverLoadError = '';
+let registrationNotice = '';
 let currentUser = JSON.parse(localStorage.getItem('sparepart_user') || 'null');
-let rolePermissions = JSON.parse(localStorage.getItem('sparepart_role_permissions') || '{"Admin":{"receive":true,"withdraw":true},"User":{"receive":false,"withdraw":true}}');
 
-function loadData() {
+function setLoading(isLoading, message = 'กำลังโหลด...') {
+  const overlay = document.getElementById('loading-overlay');
+  const messageElement = document.getElementById('loading-message');
+  if (!overlay) return;
+  if (messageElement) messageElement.textContent = message;
+  overlay.classList.toggle('hidden', !isLoading);
+}
+
+async function loadData() {
+  if (db) {
+    const snapshot = await db.doc(DATA_DOCUMENT).get();
+    if (snapshot.exists) {
+      const remote = snapshot.data();
+      parts = (remote.parts || []).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+      history = remote.history || [];
+      receipts = remote.receipts || [];
+      return { parts, history };
+    }
+  }
   const stored = localStorage.getItem(STORAGE_KEY);
   const fallback = stored
     ? JSON.parse(stored)
@@ -21,20 +47,118 @@ function loadData() {
 
   parts = (fallback.parts || [...DEFAULT_PARTS]).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
   history = fallback.history || [...DEFAULT_HISTORY];
+  receipts = fallback.receipts || [];
   return { parts, history };
 }
 
-function saveData(partsToSave, historyToSave) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ parts: partsToSave, history: historyToSave }));
+async function saveData(partsToSave, historyToSave) {
+  if (db) {
+    try {
+      await db.doc(DATA_DOCUMENT).set({ parts: partsToSave, history: historyToSave, receipts });
+    } catch (error) {
+      console.error('บันทึก Firestore ไม่สำเร็จ:', error.code, error.message);
+      throw new Error(`บันทึก Firestore ไม่สำเร็จ (${error.code || 'unknown-error'})`);
+    }
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ parts: partsToSave, history: historyToSave, receipts }));
 }
 
 function saveCart() {
   localStorage.setItem(CART_KEY, JSON.stringify(cart));
 }
 
-function initializeData() {
-  loadData();
+async function initializeData() {
+  await loadData();
 }
+
+async function refreshApprovalData(showMessage = true) {
+  if (!currentUser) return;
+  try {
+    await loadData();
+    renderApprovalRequests();
+    renderHistory();
+    if (showMessage) toast('อัปเดตคำขอเบิกล่าสุดแล้ว', 'success');
+  } catch (error) {
+    toast(`โหลดคำขอเบิกไม่สำเร็จ (${error.code || 'unknown-error'})`, 'error');
+  }
+}
+
+async function loadUserProfile(uid) {
+  for (const collectionName of ['user', 'users', 'admin']) {
+    const snapshot = await db.collection(collectionName).doc(uid).get();
+    if (snapshot.exists) {
+      return { ...snapshot.data(), profileCollection: collectionName };
+    }
+  }
+  return {};
+}
+
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase() === 'admin' ? 'Admin' : 'User';
+}
+
+async function loadApprovers() {
+  const approverSelect = document.getElementById('cart-approver');
+  if (!approverSelect) return;
+  approverLoadError = '';
+  try {
+    const snapshot = await db.collection('user').get();
+    approvers = snapshot.docs
+      .map(item => ({ uid: item.id, ...item.data() }))
+      .filter(item => normalizeRole(item.role) === 'Admin');
+  } catch (error) {
+    console.warn('โหลดรายชื่อ Admin ไม่สำเร็จ:', error.code);
+    approverLoadError = error.code || 'unknown-error';
+    approvers = [];
+  }
+  if (currentUser?.role === 'Admin' && !approvers.some(item => item.uid === currentUser.uid)) {
+    approvers.unshift({ uid: currentUser.uid, name: currentUser.name, role: 'Admin' });
+  }
+  approverSelect.innerHTML = approvers.length
+    ? approvers.map(item => `<option value="${item.uid}">${item.name || item.email || item.uid}</option>`).join('')
+    : `<option value="">${approverLoadError === 'permission-denied' ? 'ไม่มีสิทธิ์โหลดรายชื่อ Admin' : 'ไม่พบผู้อนุมัติ Admin'}</option>`;
+}
+
+async function loadPendingUsers() {
+  const card = document.getElementById('pending-users-card');
+  const list = document.getElementById('pending-users-list');
+  const count = document.getElementById('pending-users-count');
+  if (!card || !list || !count || currentUser?.role !== 'Admin') return;
+  try {
+    const snapshot = await db.collection('user').get();
+    const pending = snapshot.docs
+      .map(item => ({ uid: item.id, ...item.data() }))
+      .filter(item => item.status === 'pending');
+    count.textContent = `${pending.length} คน`;
+    card.classList.toggle('hidden', pending.length === 0);
+    list.innerHTML = pending.map(item => `<div class="rec-item">
+      <div class="rec-icon" style="background:var(--accent-soft);color:var(--accent)">👤</div>
+      <div class="rec-body"><div class="rec-title">${item.name || 'ไม่ระบุชื่อ'}</div><div class="rec-desc">${item.email || '-'} · สมัครเมื่อ ${formatDisplayDateTime(item.createdAt)}</div></div>
+      <div class="btn-row"><button class="btn btn-success btn-sm" onclick="approveUser('${item.uid}')">อนุมัติ</button><button class="btn btn-danger btn-sm" onclick="rejectUser('${item.uid}')">ปฏิเสธ</button></div>
+    </div>`).join('');
+  } catch (error) {
+    card.classList.remove('hidden');
+    count.textContent = '-';
+    list.innerHTML = `<div class="access-block">โหลดผู้สมัครไม่สำเร็จ (${error.code || 'unknown-error'})</div>`;
+  }
+}
+
+async function updateUserStatus(uid, status) {
+  if (currentUser?.role !== 'Admin') {
+    toast('เฉพาะ Admin เท่านั้นที่จัดการผู้สมัครได้', 'error');
+    return;
+  }
+  try {
+    await db.collection('user').doc(uid).update({ status, reviewedBy: currentUser.uid, reviewedAt: new Date().toISOString() });
+    await loadPendingUsers();
+    toast(status === 'approved' ? 'อนุมัติผู้ใช้สำเร็จ' : 'ปฏิเสธผู้ใช้สำเร็จ', 'success');
+  } catch (error) {
+    toast(`อัปเดตผู้ใช้ไม่สำเร็จ (${error.code || 'unknown-error'})`, 'error');
+  }
+}
+
+function approveUser(uid) { return updateUserStatus(uid, 'approved'); }
+function rejectUser(uid) { return updateUserStatus(uid, 'rejected'); }
 
 function makePlaceholderImage(text) {
   const safeText = encodeURIComponent(text || 'Spare Part');
@@ -94,6 +218,16 @@ function formatDisplayDate(value) {
   return `${day}/${month}/${year}`;
 }
 
+function formatDisplayDateTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return formatDisplayDate(value);
+  return date.toLocaleString('th-TH', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
 function openImagePreview(src, event) {
   if (event) event.stopPropagation();
   const modal = document.getElementById('image-preview-modal');
@@ -114,6 +248,27 @@ function readImageFile(file, callback) {
   const reader = new FileReader();
   reader.onload = () => callback(reader.result || '');
   reader.readAsDataURL(file);
+}
+
+async function uploadImageToCloudinary(file) {
+  if (!file) return '';
+  if (!file.type.startsWith('image/')) throw new Error('ไฟล์ต้องเป็นรูปภาพเท่านั้น');
+  if (file.size > 5 * 1024 * 1024) throw new Error('รูปภาพต้องมีขนาดไม่เกิน 5 MB');
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  formData.append('folder', 'warehouse/parts');
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+    method: 'POST',
+    body: formData
+  });
+  const result = await response.json();
+  if (!response.ok || !result.secure_url) {
+    const cloudinaryMessage = result.error?.message || `HTTP ${response.status}`;
+    throw new Error(`Cloudinary: ${cloudinaryMessage} (cloud: ${CLOUDINARY_CLOUD_NAME}, preset: ${CLOUDINARY_UPLOAD_PRESET})`);
+  }
+  return result.secure_url;
 }
 
 function toggleTheme() {
@@ -146,6 +301,7 @@ function showApp() {
   document.getElementById('user-chip').style.display = 'inline-flex';
   document.getElementById('logout-btn').style.display = 'inline-flex';
   document.getElementById('user-chip').innerHTML = `👤 ${currentUser.name} <span style="opacity:.7">(${currentUser.role})</span>`;
+  document.getElementById('cart-withdrawer').value = currentUser.name;
   applyAccessState();
   updateAlerts();
   updateCartBadge();
@@ -156,6 +312,8 @@ function showApp() {
   renderHistory();
   renderLowStock();
   renderRecommendations();
+  loadPendingUsers();
+  toast(`เข้าสู่ระบบสำเร็จ ยินดีต้อนรับ ${currentUser.name}`, 'success');
 }
 
 function showLogin() {
@@ -165,27 +323,90 @@ function showLogin() {
   document.getElementById('logout-btn').style.display = 'none';
   document.getElementById('login-email').value = '';
   document.getElementById('login-password').value = '';
-  document.getElementById('login-message').textContent = '';
+  const message = document.getElementById('login-message');
+  message.className = registrationNotice ? 'login-message success' : 'login-message';
+  message.textContent = registrationNotice;
+  registrationNotice = '';
 }
 
-function handleLogin() {
-  const email = document.getElementById('login-email').value.trim();
-  const password = document.getElementById('login-password').value;
-  const demoUsers = {
-    'admin@example.com': { name: 'Admin', role: 'Admin', password: 'admin123' },
-    'user@example.com': { name: 'User', role: 'User', password: 'user123' }
-  };
-  const user = demoUsers[email];
-  if (!user || user.password !== password) {
-    document.getElementById('login-message').textContent = 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+function toggleRegistration(show = true) {
+  const form = document.getElementById('registration-form');
+  if (!form) return;
+  form.classList.toggle('hidden', !show);
+  if (!show) {
+    ['register-name', 'register-email', 'register-password'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+  }
+}
+
+async function handleRegistration() {
+  const name = document.getElementById('register-name').value.trim();
+  const email = document.getElementById('register-email').value.trim();
+  const password = document.getElementById('register-password').value;
+  const message = document.getElementById('login-message');
+  if (!name || !email || password.length < 6) {
+    message.textContent = 'กรุณากรอกชื่อ อีเมล และรหัสผ่านอย่างน้อย 6 ตัวอักษร';
     return;
   }
-  currentUser = { email, ...user };
-  localStorage.setItem('sparepart_user', JSON.stringify(currentUser));
-  showApp();
+  setLoading(true, 'กำลังสร้างบัญชี...');
+  try {
+    const credential = await auth.createUserWithEmailAndPassword(email, password);
+    await db.collection('user').doc(credential.user.uid).set({
+      name,
+      email,
+      role: 'User',
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    });
+    await auth.signOut();
+    toggleRegistration(false);
+    registrationNotice = 'สมัครสมาชิกสำเร็จ บัญชีอยู่ระหว่างรอ Admin อนุมัติ';
+    setLoading(false);
+    showLogin();
+  } catch (error) {
+    const messages = {
+      'auth/email-already-in-use': 'อีเมลนี้ถูกใช้งานแล้ว',
+      'auth/invalid-email': 'รูปแบบอีเมลไม่ถูกต้อง',
+      'auth/operation-not-allowed': 'ยังไม่ได้เปิด Email/Password ใน Firebase Authentication',
+      'auth/weak-password': 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร'
+    };
+    message.className = 'login-message';
+    message.textContent = messages[error.code] || `สมัครสมาชิกไม่สำเร็จ (${error.code || 'unknown-error'})`;
+    setLoading(false);
+  }
 }
 
-function logout() {
+async function handleLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const message = document.getElementById('login-message');
+  message.textContent = '';
+  if (!email || !password) {
+    message.textContent = 'กรุณากรอกอีเมลและรหัสผ่าน';
+    return;
+  }
+  setLoading(true, 'กำลังตรวจสอบบัญชี...');
+  try {
+    await auth.signInWithEmailAndPassword(email, password);
+  } catch (error) {
+    const messages = {
+      'auth/invalid-credential': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง หรือยังไม่มีบัญชีนี้ใน Firebase',
+      'auth/user-not-found': 'ยังไม่มีบัญชีนี้ กรุณาสร้างผู้ใช้ใน Firebase Authentication',
+      'auth/wrong-password': 'รหัสผ่านไม่ถูกต้อง',
+      'auth/operation-not-allowed': 'ยังไม่ได้เปิด Email/Password ใน Firebase Authentication',
+      'auth/invalid-email': 'รูปแบบอีเมลไม่ถูกต้อง',
+      'auth/too-many-requests': 'ลองเข้าสู่ระบบหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่'
+    };
+    message.textContent = messages[error.code] || `เข้าสู่ระบบไม่สำเร็จ (${error.code || 'unknown-error'})`;
+    setLoading(false);
+  }
+}
+
+async function logout() {
+  const confirmed = window.confirm('ต้องการออกจากระบบใช่หรือไม่?');
+  if (!confirmed) return;
+  await auth.signOut();
   currentUser = null;
   localStorage.removeItem('sparepart_user');
   showLogin();
@@ -194,7 +415,7 @@ function logout() {
 function getEffectivePermissions() {
   if (!currentUser) return { receive: false, withdraw: false };
   if (currentUser.role === 'Admin') return { receive: true, withdraw: true };
-  return rolePermissions[currentUser.role] || rolePermissions.User || { receive: false, withdraw: true };
+  return { receive: false, withdraw: true };
 }
 
 function canAccessAction(action) {
@@ -225,36 +446,6 @@ function applyAccessState() {
   if (cartBlock) cartBlock.classList.toggle('hidden', withdrawAllowed);
   if (cartWrapper) cartWrapper.classList.toggle('hidden', !withdrawAllowed);
 
-  const permissionButton = document.getElementById('permission-toggle');
-  if (permissionButton) {
-    permissionButton.style.display = currentUser?.role === 'Admin' ? 'inline-flex' : 'none';
-  }
-}
-
-function openPermissionModal() {
-  if (!currentUser || currentUser.role !== 'Admin') {
-    toast('เฉพาะ Admin ที่สามารถกำหนดสิทธิ์ได้', 'error');
-    return;
-  }
-  const perms = rolePermissions.User || { receive: false, withdraw: true };
-  document.getElementById('perm-receive').checked = !!perms.receive;
-  document.getElementById('perm-withdraw').checked = !!perms.withdraw;
-  document.getElementById('permission-modal-bg').classList.add('open');
-}
-
-function closePermissionModal() {
-  document.getElementById('permission-modal-bg').classList.remove('open');
-}
-
-function savePermissions() {
-  rolePermissions.User = {
-    receive: document.getElementById('perm-receive').checked,
-    withdraw: document.getElementById('perm-withdraw').checked
-  };
-  localStorage.setItem('sparepart_role_permissions', JSON.stringify(rolePermissions));
-  applyAccessState();
-  closePermissionModal();
-  toast('อัปเดตสิทธิ์ของ User สำเร็จ', 'success');
 }
 
 // ===== NAVIGATION =====
@@ -280,9 +471,15 @@ function navigate(page) {
   document.getElementById('page-title').textContent = TITLES[page] || page;
   if (page === 'dashboard') renderDashboard();
   if (page === 'shop') renderShop();
-  if (page === 'cart') renderCart();
+  if (page === 'cart') {
+    renderCart();
+    loadApprovers();
+  }
   if (page === 'inventory') renderInventory();
-  if (page === 'history') renderHistory();
+  if (page === 'history') {
+    renderHistory();
+    refreshApprovalData(false);
+  }
   if (page === 'lowstock') renderLowStock();
   if (page === 'recommend') renderRecommendations();
 }
@@ -318,6 +515,13 @@ function updateAlerts() {
   document.getElementById('alert-btn').style.display = n > 0 ? 'flex' : 'none';
   document.getElementById('stat-lowstock').textContent = n;
   document.getElementById('stat-total').textContent = parts.length;
+  const pendingCount = history.filter(entry => entry.status === 'pending').length;
+  const approvalAlert = document.getElementById('approval-alert');
+  const approvalAlertCount = document.getElementById('approval-alert-count');
+  if (approvalAlert && approvalAlertCount) {
+    approvalAlertCount.textContent = pendingCount;
+    approvalAlert.style.display = currentUser?.role === 'Admin' && pendingCount > 0 ? 'flex' : 'none';
+  }
 }
 
 function updateCartBadge() {
@@ -336,8 +540,13 @@ function renderDashboard() {
 
   const now = new Date();
   const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  document.getElementById('stat-received').textContent = parts.filter(p => (p.updated||'').startsWith(thisMonth)).length;
-  document.getElementById('stat-withdrawn').textContent = history.filter(h => h.date.startsWith(thisMonth)).length;
+  const monthlyReceipts = receipts.filter(item => item.date.startsWith(thisMonth));
+  document.getElementById('stat-received').textContent = monthlyReceipts.length;
+  const monthlyReceivedValue = monthlyReceipts.reduce((total, item) => total + Number(item.total || 0), 0);
+  document.getElementById('stat-received-value').textContent = `฿${monthlyReceivedValue.toLocaleString('th-TH', { maximumFractionDigits: 2 })}`;
+  document.getElementById('stat-withdrawn').textContent = history.filter(h => h.date.startsWith(thisMonth) && h.status === 'approved').length;
+  const stockValue = parts.reduce((total, part) => total + (Number(part.qty) * Number(part.unitPrice || 0)), 0);
+  document.getElementById('stat-stock-value').textContent = `฿${stockValue.toLocaleString('th-TH', { maximumFractionDigits: 2 })}`;
 
   const low = getLowStockParts();
   document.getElementById('dash-low-count').textContent = `${low.length} รายการ`;
@@ -445,10 +654,13 @@ function renderShop() {
             ${inCart > 0 ? `<div class="in-cart-pill">🛒 ในตะกร้า ${inCart} ชิ้น</div>` : ''}
             <div class="product-footer">
               ${outOfStock ? `<button class="btn btn-outline btn-sm add-cart-btn" disabled>หมดสต็อก</button>` : `
-              <div class="qty-stepper">
-                <button type="button" onclick="stepShopQty(${p.id}, -1)">−</button>
-                <input type="number" id="shop-qty-${p.id}" value="1" min="1" max="${maxQty}">
-                <button type="button" onclick="stepShopQty(${p.id}, 1)">+</button>
+              <div class="quantity-control">
+                <span>จำนวนเบิก</span>
+                <div class="qty-stepper">
+                  <button type="button" onclick="stepShopQty(${p.id}, -1)">−</button>
+                  <input type="number" id="shop-qty-${p.id}" value="1" min="1" max="${maxQty}" aria-label="จำนวนเบิก ${p.name}">
+                  <button type="button" onclick="stepShopQty(${p.id}, 1)">+</button>
+                </div>
               </div>
               <button class="btn btn-primary btn-sm add-cart-btn" ${maxQty === 0 ? 'disabled' : ''} onclick="addToCart(${p.id})">🛒 ใส่ตะกร้า</button>
               `}
@@ -523,10 +735,13 @@ function renderCart() {
         <div class="cart-row-meta">${p.code} · คงเหลือในคลัง ${p.qty} <span class="badge ${st.cls}" style="margin-left:6px">${st.label}</span></div>
       </div>
       <div class="cart-row-actions">
-        <div class="qty-stepper">
+        <div class="quantity-control cart-quantity-control">
+          <span>จำนวนเบิก</span>
+          <div class="qty-stepper">
           <button type="button" onclick="stepCartQty(${p.id}, -1)">−</button>
-          <input type="number" value="${c.qty}" min="1" max="${p.qty}" onchange="setCartQty(${p.id}, this.value)">
+          <input type="number" value="${c.qty}" min="1" max="${p.qty}" aria-label="จำนวนเบิก ${p.name}" onchange="setCartQty(${p.id}, this.value)">
           <button type="button" onclick="stepCartQty(${p.id}, 1)">+</button>
+          </div>
         </div>
         <button class="btn btn-danger btn-sm" onclick="removeFromCart(${p.id})">🗑</button>
       </div>
@@ -576,7 +791,7 @@ function clearCart() {
   toast('ล้างตะกร้าแล้ว', 'info');
 }
 
-function checkoutCart() {
+async function checkoutCart() {
   if (!canAccessAction('withdraw')) {
     toast('คุณไม่มีสิทธิ์เบิกอะไหล่ โปรดติดต่อ Admin', 'error');
     return;
@@ -585,10 +800,12 @@ function checkoutCart() {
 
   const withdrawer = document.getElementById('cart-withdrawer').value.trim();
   const date = document.getElementById('cart-date').value;
-  const approver = document.getElementById('cart-approver').value;
+  const approverSelect = document.getElementById('cart-approver');
+  const approverUid = approverSelect.value;
+  const approver = approverSelect.options[approverSelect.selectedIndex]?.textContent || '';
   const machine = document.getElementById('cart-machine').value.trim();
 
-  if (!withdrawer || !date || !machine) {
+  if (!withdrawer || !date || !machine || !approverUid) {
     toast('กรุณากรอกข้อมูลผู้เบิก วันที่ และเครื่องจักรให้ครบ', 'error');
     return;
   }
@@ -604,13 +821,16 @@ function checkoutCart() {
   const itemNames = [];
   cart.forEach(c => {
     const p = parts.find(x => x.id === c.partId);
-    p.qty -= c.qty;
-    p.updated = date;
-    history.push({ id: nextHistId++, date, partId: p.id, partCode: p.code, partName: p.name, qty: c.qty, withdrawer, machine, approver });
+    history.push({ id: nextHistId++, date, requestedAt: new Date().toISOString(), partId: p.id, partCode: p.code, partName: p.name, qty: c.qty, image: p.image || '', withdrawer, machine, approver, approverUid, status: 'pending' });
     itemNames.push(`${p.name} x${c.qty}`);
   });
 
-  saveData(parts, history);
+  try {
+    await saveData(parts, history);
+  } catch (error) {
+    toast(error.message || 'ส่งคำขอเบิกไม่สำเร็จ', 'error');
+    return;
+  }
   cart = [];
   saveCart();
 
@@ -623,7 +843,7 @@ function checkoutCart() {
   renderHistory();
   clearCartCheckoutForm();
 
-  toast(`เบิกสำเร็จ: ${itemNames.join(', ')}`, 'success');
+  toast(`ส่งคำขอเบิกแล้ว รอ ${approver} อนุมัติ: ${itemNames.join(', ')}`, 'success');
   navigate('history');
 }
 
@@ -685,6 +905,7 @@ function openAddPart() {
   document.getElementById('edit-code').value = '';
   document.getElementById('edit-category').value = 'Bearing';
   document.getElementById('edit-qty').value = '0';
+  document.getElementById('edit-unit-price').value = '0';
   document.getElementById('edit-minqty').value = '5';
   document.getElementById('edit-location').value = '';
   document.getElementById('edit-image-url').value = '';
@@ -707,6 +928,7 @@ function openEditPart(id) {
   document.getElementById('edit-code').value = p.code;
   document.getElementById('edit-category').value = p.category;
   document.getElementById('edit-qty').value = p.qty;
+  document.getElementById('edit-unit-price').value = Number(p.unitPrice || 0);
   document.getElementById('edit-minqty').value = p.minQty;
   document.getElementById('edit-location').value = p.location;
   document.getElementById('edit-image-url').value = isGeneratedPlaceholderImage(p.image) ? '' : (p.image || '');
@@ -721,7 +943,7 @@ function closeEditModal() {
   document.getElementById('edit-modal-bg').classList.remove('open');
 }
 
-function saveEditedPart() {
+async function saveEditedPart() {
   if (!canAccessAction('receive')) {
     toast('คุณไม่มีสิทธิ์บันทึกข้อมูลอะไหล่ โปรดติดต่อ Admin', 'error');
     return;
@@ -732,6 +954,7 @@ function saveEditedPart() {
   const category = document.getElementById('edit-category').value;
   const qty = parseInt(document.getElementById('edit-qty').value, 10);
   const minQty = parseInt(document.getElementById('edit-minqty').value, 10);
+  const unitPrice = parseFloat(document.getElementById('edit-unit-price').value) || 0;
   const location = document.getElementById('edit-location').value.trim();
   const imageUrl = document.getElementById('edit-image-url').value.trim();
   const imageFile = document.getElementById('edit-image-file').files[0];
@@ -751,7 +974,7 @@ function saveEditedPart() {
     return;
   }
 
-  const finishSave = (imageValue) => {
+  const finishSave = async (imageValue) => {
     const finalImageValue = imageValue && looksLikeImageReference(imageValue) ? imageValue : (imageValue && imageValue.startsWith('data:image/') ? imageValue : '');
 
     if (editingPartId) {
@@ -761,9 +984,10 @@ function saveEditedPart() {
       p.code = code;
       p.category = category;
       p.qty = qty;
+      p.unitPrice = unitPrice;
       p.minQty = minQty;
       p.location = location;
-      p.image = finalImageValue;
+      p.image = finalImageValue || p.image || '';
       p.updated = new Date().toISOString().split('T')[0];
       toast(`อัปเดตข้อมูล "${name}" สำเร็จ`, 'success');
     } else {
@@ -773,7 +997,7 @@ function saveEditedPart() {
       toast(`เพิ่ม "${name}" เข้าคลังสำเร็จ`, 'success');
     }
 
-    saveData(parts, history);
+    await saveData(parts, history);
     updateAlerts();
     renderInventory();
     renderShop();
@@ -783,10 +1007,11 @@ function saveEditedPart() {
     closeEditModal();
   };
 
-  if (imageFile) {
-    readImageFile(imageFile, (data) => finishSave(data || imageUrl));
-  } else {
-    finishSave(imageUrl);
+  try {
+    const uploadedImageUrl = imageFile ? await uploadImageToCloudinary(imageFile) : '';
+    await finishSave(uploadedImageUrl || imageUrl);
+  } catch (error) {
+    toast(error.message || 'บันทึกข้อมูลไม่สำเร็จ', 'error');
   }
 }
 
@@ -817,7 +1042,7 @@ function deletePart(id) {
 }
 
 // ===== RECEIVE =====
-function receivePart() {
+async function receivePart() {
   if (!canAccessAction('receive')) {
     toast('คุณไม่มีสิทธิ์รับอะไหล่เข้า โปรดติดต่อ Admin', 'error');
     return;
@@ -829,37 +1054,41 @@ function receivePart() {
   const qty = parseInt(document.getElementById('r-qty').value);
   const minQty = parseInt(document.getElementById('r-minqty').value) || 5;
   const location = document.getElementById('r-location').value.trim();
+  const unitPrice = parseFloat(document.getElementById('r-unit-price').value);
   const receiver = document.getElementById('r-receiver').value.trim();
   const date = document.getElementById('r-date').value;
   const imageUrl = document.getElementById('r-image-url').value.trim();
   const imageFile = document.getElementById('r-image-file').files[0];
 
-  if (!name || !code || !qty || !location || !receiver || !date) {
+  if (!name || !code || !qty || !location || !receiver || !date || isNaN(unitPrice) || unitPrice < 0) {
     toast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error'); return;
   }
   if (isNaN(qty) || qty < 1) { toast('จำนวนต้องมากกว่า 0', 'error'); return; }
 
   const existing = parts.find(p => p.code === code);
 
-  const finishSave = (imageValue) => {
+  const finishSave = async (imageValue) => {
     let finalImageValue = existing ? (existing.image || '') : '';
     if (imageValue && (imageValue.startsWith('data:image/') || looksLikeImageReference(imageValue))) {
       finalImageValue = imageValue;
     }
 
     if (existing) {
+      const previousValue = existing.qty * Number(existing.unitPrice || 0);
       existing.qty += qty;
+      existing.unitPrice = (previousValue + (qty * unitPrice)) / existing.qty;
       existing.updated = date;
       existing.image = finalImageValue;
       toast(`เติมสต็อก "${existing.name}" +${qty} ชิ้น (คงเหลือ ${existing.qty})`, 'success');
     } else {
       const newId = parts.length ? Math.max(...parts.map(p => p.id)) + 1 : 1;
-      const newPart = { id: newId, code, name, category, qty, minQty, location, updated: date, image: finalImageValue };
+      const newPart = { id: newId, code, name, category, qty, minQty, location, unitPrice, updated: date, image: finalImageValue };
       parts.push(newPart);
       toast(`เพิ่ม "${name}" เข้าคลังสำเร็จ`, 'success');
     }
 
-    saveData(parts, history);
+    receipts.push({ id: `${Date.now()}-${code}`, date, receivedAt: new Date().toISOString(), receiver, partId: existing?.id || parts.find(item => item.code === code)?.id, partCode: code, partName: existing?.name || name, qty, unitPrice, total: qty * unitPrice });
+    await saveData(parts, history);
     updateAlerts();
     renderInventory();
     renderShop();
@@ -868,22 +1097,102 @@ function receivePart() {
     clearReceiveForm();
   };
 
-  if (imageFile) {
-    readImageFile(imageFile, (data) => finishSave(data || imageUrl));
-  } else {
-    finishSave(imageUrl);
+  try {
+    const uploadedImageUrl = imageFile ? await uploadImageToCloudinary(imageFile) : '';
+    await finishSave(uploadedImageUrl || imageUrl);
+  } catch (error) {
+    toast(error.message || 'บันทึกรับเข้าไม่สำเร็จ', 'error');
   }
 }
 
 function clearReceiveForm() {
-  ['r-name','r-code','r-qty','r-location','r-receiver','r-image-url'].forEach(id => document.getElementById(id).value = '');
+  ['r-name','r-code','r-qty','r-location','r-receiver','r-image-url','r-unit-price'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('r-image-file').value = '';
   document.getElementById('r-image-preview').innerHTML = 'ไม่มีรูปภาพ';
   document.getElementById('r-minqty').value = '5';
   document.getElementById('r-date').value = new Date().toISOString().split('T')[0];
 }
 
-// ===== HISTORY =====
+// ===== APPROVALS / HISTORY =====
+function getHistoryStatus(entry) {
+  if (entry.status === 'pending') return { label: 'รออนุมัติ', cls: 'badge-amber' };
+  if (entry.status === 'rejected') return { label: 'ไม่อนุมัติ', cls: 'badge-red' };
+  return { label: 'อนุมัติแล้ว', cls: 'badge-green' };
+}
+
+async function approveWithdrawal(id) {
+  if (!currentUser || currentUser.role !== 'Admin') {
+    toast('เฉพาะ Admin เท่านั้นที่อนุมัติได้', 'error');
+    return;
+  }
+  const entry = history.find(item => item.id === id);
+  if (!entry || entry.status !== 'pending') return;
+  const part = parts.find(item => item.id === entry.partId);
+  if (!part || entry.qty > part.qty) {
+    toast(`สต็อกของ ${entry.partName} ไม่เพียงพอ`, 'error');
+    return;
+  }
+  part.qty -= entry.qty;
+  part.updated = entry.date;
+  entry.status = 'approved';
+  entry.approvedBy = currentUser.name;
+  entry.approvedAt = new Date().toISOString();
+  try {
+    await saveData(parts, history);
+    renderApprovalRequests();
+    renderHistory();
+    renderInventory();
+    renderShop();
+    renderLowStock();
+    renderDashboard();
+    toast(`อนุมัติการเบิก ${entry.partName} แล้ว`, 'success');
+  } catch (error) {
+    toast(error.message || 'อนุมัติไม่สำเร็จ', 'error');
+  }
+}
+
+async function rejectWithdrawal(id) {
+  if (!currentUser || currentUser.role !== 'Admin') {
+    toast('เฉพาะ Admin เท่านั้นที่ไม่อนุมัติได้', 'error');
+    return;
+  }
+  const entry = history.find(item => item.id === id);
+  if (!entry || entry.status !== 'pending') return;
+  entry.status = 'rejected';
+  entry.approvedBy = currentUser.name;
+  entry.approvedAt = new Date().toISOString();
+  try {
+    await saveData(parts, history);
+    renderApprovalRequests();
+    renderHistory();
+    toast(`ไม่อนุมัติการเบิก ${entry.partName}`, 'info');
+  } catch (error) {
+    toast(error.message || 'ไม่อนุมัติไม่สำเร็จ', 'error');
+  }
+}
+
+function renderApprovalRequests() {
+  const card = document.getElementById('pending-withdrawals-card');
+  const list = document.getElementById('pending-withdrawals-list');
+  const count = document.getElementById('pending-count');
+  if (!card || !list || !count) return;
+  const pending = history.filter(entry => entry.status === 'pending');
+  count.textContent = `${pending.length} รายการ`;
+  card.classList.toggle('hidden', currentUser?.role !== 'Admin' || pending.length === 0);
+  list.innerHTML = pending.map(entry => { const part = parts.find(item => item.id === entry.partId); const image = entry.image || part?.image || ''; return `<div class="rec-item approval-request">
+    <img class="approval-image" src="${getPartImage({ image, name: entry.partName })}" alt="${entry.partName}" onerror="this.onerror=null;this.src='${makePlaceholderImage(entry.partName)}';">
+    <div class="rec-body">
+      <div class="rec-title">${entry.partName} x${entry.qty}</div>
+      <div class="rec-desc">ผู้เบิก: ${entry.withdrawer} · เครื่องจักร: ${entry.machine}</div>
+      <div class="rec-desc">ขอเบิก: ${formatDisplayDateTime(entry.requestedAt || entry.date)}</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-success btn-sm" onclick="approveWithdrawal(${entry.id})">อนุมัติ</button>
+      <button class="btn btn-danger btn-sm" onclick="rejectWithdrawal(${entry.id})">ไม่อนุมัติ</button>
+    </div>
+  </div>`; }).join('');
+}
+
 function renderHistory() {
   const q = (document.getElementById('hist-search').value || '').toLowerCase();
   const from = document.getElementById('hist-date-from').value;
@@ -901,19 +1210,22 @@ function renderHistory() {
     (!machine || h.machine === machine)
   ).sort((a,b) => b.date.localeCompare(a.date));
 
+  renderApprovalRequests();
   const tbody = document.getElementById('hist-tbody');
   tbody.innerHTML = filtered.length === 0
-    ? `<tr><td colspan="8"><div class="empty"><div class="empty-icon">📋</div>ไม่พบประวัติ</div></td></tr>`
-    : filtered.map((h,i) => `<tr>
+    ? `<tr><td colspan="10"><div class="empty"><div class="empty-icon">📋</div>ไม่พบประวัติ</div></td></tr>`
+    : filtered.map((h,i) => { const status = getHistoryStatus(h); return `<tr>
         <td style="color:var(--muted)">${i+1}</td>
-        <td>${h.date}</td>
+        <td>${formatDisplayDate(h.date)}<br><small>${formatDisplayDateTime(h.requestedAt)}</small></td>
         <td style="font-family:var(--mono);font-size:12px;color:var(--accent)">${h.partCode}</td>
         <td>${h.partName}</td>
         <td><span class="badge badge-amber">${h.qty}</span></td>
         <td>${h.withdrawer}</td>
         <td style="font-family:var(--mono);font-size:12px">${h.machine}</td>
         <td style="color:var(--muted)">${h.approver}</td>
-      </tr>`).join('');
+        <td><span class="badge ${status.cls}">${status.label}</span></td>
+        <td>${formatDisplayDateTime(h.approvedAt)}</td>
+      </tr>`; }).join('');
 }
 
 // ===== LOW STOCK =====
@@ -966,14 +1278,46 @@ function confirmRestock() {
 function renderRecommendations() {
   const pairs = {};
   const machineFreq = {};
-  history.forEach(h => {
+  const approvedHistory = history.filter(entry => !entry.status || entry.status === 'approved');
+  const usageByPart = {};
+  approvedHistory.forEach(entry => {
+    usageByPart[entry.partId] = (usageByPart[entry.partId] || 0) + Number(entry.qty || 0);
+  });
+
+  const topUsageList = document.getElementById('rec-top-usage-list');
+  const topUsage = Object.entries(usageByPart)
+    .map(([partId, qty]) => ({ part: parts.find(item => String(item.id) === String(partId)), qty }))
+    .filter(item => item.part)
+    .sort((a, b) => b.qty - a.qty)
+    .slice(0, 5);
+  topUsageList.innerHTML = topUsage.length ? topUsage.map(item => `<div class="rec-item">
+    <div class="rec-icon" style="background:rgba(217,119,6,0.1);color:var(--amber)">↗</div>
+    <div class="rec-body"><div class="rec-title">${item.part.name}</div><div class="rec-desc">เบิกแล้ว ${item.qty} ชิ้น · คงเหลือ ${item.part.qty}</div></div>
+  </div>`).join('') : '<div class="empty">ยังไม่มีข้อมูลการเบิก</div>';
+
+  const reorderList = document.getElementById('rec-reorder-list');
+  const reorderParts = parts.filter(part => part.qty <= part.minQty).sort((a, b) => (a.qty - a.minQty) - (b.qty - b.minQty)).slice(0, 5);
+  reorderList.innerHTML = reorderParts.length ? reorderParts.map(part => {
+    const suggested = Math.max(part.minQty * 2 - part.qty, part.minQty || 1);
+    return `<div class="rec-item"><div class="rec-icon" style="background:rgba(220,38,38,0.1);color:var(--red)">!</div>
+      <div class="rec-body"><div class="rec-title">${part.name}</div><div class="rec-desc">เหลือ ${part.qty} ชิ้น · แนะนำเติมอย่างน้อย ${suggested} ชิ้น</div></div></div>`;
+  }).join('') : '<div class="empty">สต็อกอยู่ในระดับปกติ</div>';
+
+  const receiptList = document.getElementById('rec-recent-receipts-list');
+  const recentReceipts = [...receipts].sort((a, b) => String(b.receivedAt || b.date).localeCompare(String(a.receivedAt || a.date))).slice(0, 5);
+  receiptList.innerHTML = recentReceipts.length ? recentReceipts.map(item => `<div class="rec-item">
+    <div class="rec-icon" style="background:rgba(22,163,74,0.1);color:var(--green)">+</div>
+    <div class="rec-body"><div class="rec-title">${item.partName} +${item.qty} ชิ้น</div><div class="rec-desc">฿${Number(item.total || 0).toLocaleString('th-TH', { maximumFractionDigits: 2 })} · ${formatDisplayDateTime(item.receivedAt || item.date)}</div></div>
+  </div>`).join('') : '<div class="empty">ยังไม่มีข้อมูลรับเข้า</div>';
+
+  approvedHistory.forEach(h => {
     const key = `${h.machine}|${h.date}`;
     if (!machineFreq[h.machine]) machineFreq[h.machine] = {};
     machineFreq[h.machine][h.partCode] = (machineFreq[h.machine][h.partCode] || 0) + 1;
   });
 
   const bySession = {};
-  history.forEach(h => {
+  approvedHistory.forEach(h => {
     const k = `${h.date}|${h.machine}`;
     if (!bySession[k]) bySession[k] = [];
     bySession[k].push(h.partName);
@@ -1015,7 +1359,7 @@ function renderRecommendations() {
   const adviceList = document.getElementById('rec-advice-list');
   const low = getLowStockParts();
   const highFreqLow = low.filter(p => {
-    const freq = history.filter(h => h.partCode === p.code).reduce((s,h) => s+h.qty, 0);
+    const freq = approvedHistory.filter(h => h.partCode === p.code).reduce((s,h) => s+h.qty, 0);
     return freq > 0;
   });
   const advices = [
@@ -1120,14 +1464,45 @@ function updateImagePreview(previewId, urlInputId, fileInputId) {
   }
 });
 
-function bootstrap() {
+async function bootstrap() {
   applySavedTheme();
-  initializeData();
-  if (currentUser) {
-    showApp();
-  } else {
-    showLogin();
-  }
+  if (typeof initializeLanguage === 'function') initializeLanguage();
+  setLoading(true, 'กำลังตรวจสอบการเข้าสู่ระบบ...');
+  showLogin();
+  auth.onAuthStateChanged(async (user) => {
+    try {
+      if (!user) {
+        currentUser = null;
+        showLogin();
+        return;
+      }
+      const profile = await loadUserProfile(user.uid);
+      console.info('Firebase login UID:', user.uid);
+      console.info('โหลดโปรไฟล์จาก collection:', profile.profileCollection || 'ไม่พบเอกสาร');
+      console.info('ค่า role จาก Firestore:', profile.role || '(ไม่มี role)');
+      const normalizedRole = normalizeRole(profile.role);
+      if (normalizedRole !== 'Admin' && profile.status !== 'approved') {
+        await auth.signOut();
+        registrationNotice = profile.status === 'rejected'
+          ? 'บัญชีนี้ไม่ได้รับการอนุมัติจาก Admin'
+          : 'บัญชีของคุณอยู่ระหว่างรอ Admin อนุมัติ';
+        showLogin();
+        return;
+      }
+      currentUser = { uid: user.uid, email: user.email, name: profile.name || user.email, role: normalizedRole };
+      console.info('บทบาทที่ระบบใช้งาน:', currentUser.role);
+      localStorage.setItem('sparepart_user', JSON.stringify(currentUser));
+      await initializeData();
+      await loadApprovers();
+      showApp();
+    } catch (error) {
+      console.error('เริ่มต้นระบบไม่สำเร็จ:', error.code, error.message);
+      registrationNotice = `ระบบเริ่มต้นไม่สำเร็จ (${error.code || 'unknown-error'})`;
+      showLogin();
+    } finally {
+      setLoading(false);
+    }
+  });
 }
 
 bootstrap();

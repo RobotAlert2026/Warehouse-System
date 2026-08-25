@@ -181,6 +181,10 @@ select option { background: var(--surface2); }
   position: fixed; inset: 0; z-index: 1000; background: linear-gradient(135deg, #dbeafe, #eff6ff 60%, #ffffff);
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
+.loading-overlay { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: rgba(10, 20, 40, 0.32); backdrop-filter: blur(3px); }
+.loading-box { min-width: 190px; padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); text-align: center; box-shadow: var(--shadow); }
+.loading-spinner { width: 34px; height: 34px; margin: 0 auto 12px; border: 4px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 body.dark-mode .login-screen {
   background: linear-gradient(135deg, rgba(7,11,22,0.98), rgba(15,23,41,0.94));
 }
@@ -191,6 +195,10 @@ body.dark-mode .login-screen {
 .login-card h2 { font-size: 22px; margin-bottom: 18px; }
 .login-hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
 .login-message { margin-top: 12px; color: var(--red); font-size: 13px; }
+.login-message.success { color: var(--green); }
+.login-register-link { margin-top: 14px; text-align: center; color: var(--muted); font-size: 13px; }
+.btn-link { border: 0; background: transparent; color: var(--accent); cursor: pointer; font-weight: 600; padding: 0; }
+.registration-form { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .user-chip {
   display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(37, 99, 235, 0.2);
@@ -248,6 +256,8 @@ body.dark-mode .login-screen {
 .rec-body { flex: 1; }
 .rec-title { font-weight: 500; font-size: 13px; margin-bottom: 3px; }
 .rec-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.approval-request { align-items: center; }
+.approval-image { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); flex-shrink: 0; }
 
 /* MODAL */
 .modal-bg {
@@ -303,10 +313,12 @@ body.dark-mode .login-screen {
 .product-code { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 .product-stock-line { font-size: 12px; color: var(--muted); }
 .product-footer { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.quantity-control { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text); font-size: 12px; font-weight: 600; }
 .qty-stepper { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; width: fit-content; background: var(--surface2); }
 .qty-stepper button { width: 28px; height: 28px; border: none; background: transparent; cursor: pointer; font-size: 14px; color: var(--text); }
 .qty-stepper button:hover { background: var(--accent-soft); color: var(--accent); }
-.qty-stepper input { width: 40px; height: 28px; text-align: center; border: none; background: transparent; font-size: 13px; color: var(--text); }
+.qty-stepper input { width: 48px; height: 32px; text-align: center; border: none; background: var(--surface); font-size: 15px; font-weight: 700; color: var(--text); }
+.cart-quantity-control { flex-direction: column; align-items: flex-start; gap: 5px; }
 .add-cart-btn { width: 100%; justify-content: center; }
 .in-cart-pill {
   font-size: 11px; background: var(--accent-soft); color: var(--accent); padding: 4px 9px;
