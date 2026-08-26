@@ -413,9 +413,9 @@ async function logout() {
 }
 
 function getEffectivePermissions() {
-  if (!currentUser) return { receive: false, withdraw: false };
-  if (currentUser.role === 'Admin') return { receive: true, withdraw: true };
-  return { receive: false, withdraw: true };
+  if (!currentUser) return { receive: false, withdraw: false, adminOnly: false };
+  if (currentUser.role === 'Admin') return { receive: true, withdraw: true, adminOnly: true };
+  return { receive: false, withdraw: true, adminOnly: false };
 }
 
 function canAccessAction(action) {
@@ -426,9 +426,12 @@ function canAccessAction(action) {
 function applyAccessState() {
   const receiveAllowed = canAccessAction('receive');
   const withdrawAllowed = canAccessAction('withdraw');
+  const adminOnly = canAccessAction('adminOnly');
   const receiveNav = document.getElementById('nav-receive');
   const shopNav = document.getElementById('nav-shop');
   const cartNav = document.getElementById('nav-cart');
+  const lowstockNav = document.getElementById('nav-lowstock');
+  const recommendNav = document.getElementById('nav-recommend');
   const receiveBlock = document.getElementById('receive-access-block');
   const receiveWrapper = document.getElementById('receive-form-wrapper');
   const shopBlock = document.getElementById('shop-access-block');
@@ -439,13 +442,14 @@ function applyAccessState() {
   if (receiveNav) receiveNav.classList.toggle('disabled', !receiveAllowed);
   if (shopNav) shopNav.classList.toggle('disabled', !withdrawAllowed);
   if (cartNav) cartNav.classList.toggle('disabled', !withdrawAllowed);
+  if (lowstockNav) lowstockNav.style.display = adminOnly ? '' : 'none';
+  if (recommendNav) recommendNav.style.display = adminOnly ? '' : 'none';
   if (receiveBlock) receiveBlock.classList.toggle('hidden', receiveAllowed);
   if (receiveWrapper) receiveWrapper.classList.toggle('hidden', !receiveAllowed);
   if (shopBlock) shopBlock.classList.toggle('hidden', withdrawAllowed);
   if (shopWrapper) shopWrapper.classList.toggle('hidden', !withdrawAllowed);
   if (cartBlock) cartBlock.classList.toggle('hidden', withdrawAllowed);
   if (cartWrapper) cartWrapper.classList.toggle('hidden', !withdrawAllowed);
-
 }
 
 // ===== NAVIGATION =====
@@ -459,6 +463,10 @@ const TITLES = {
 function navigate(page) {
   if ((page === 'receive' && !canAccessAction('receive')) || ((page === 'shop' || page === 'cart') && !canAccessAction('withdraw'))) {
     toast('คุณไม่มีสิทธิ์ใช้งานหน้านี้ โปรดติดต่อ Admin', 'error');
+    return;
+  }
+  if ((page === 'lowstock' || page === 'recommend') && !canAccessAction('adminOnly')) {
+    toast('เฉพาะ Admin เท่านั้นที่เข้าถึงหน้านี้ได้', 'error');
     return;
   }
 
@@ -510,9 +518,10 @@ function toast(msg, type = 'success') {
 function updateAlerts() {
   const low = getLowStockParts();
   const n = low.length;
+  const isAdmin = currentUser?.role === 'Admin';
   document.getElementById('low-badge').textContent = n;
   document.getElementById('alert-count').textContent = n;
-  document.getElementById('alert-btn').style.display = n > 0 ? 'flex' : 'none';
+  document.getElementById('alert-btn').style.display = (n > 0 && isAdmin) ? 'flex' : 'none';
   document.getElementById('stat-lowstock').textContent = n;
   document.getElementById('stat-total').textContent = parts.length;
   const pendingCount = history.filter(entry => entry.status === 'pending').length;
@@ -1466,7 +1475,6 @@ function updateImagePreview(previewId, urlInputId, fileInputId) {
 
 async function bootstrap() {
   applySavedTheme();
-  if (typeof initializeLanguage === 'function') initializeLanguage();
   setLoading(true, 'กำลังตรวจสอบการเข้าสู่ระบบ...');
   showLogin();
   auth.onAuthStateChanged(async (user) => {
@@ -1481,11 +1489,18 @@ async function bootstrap() {
       console.info('โหลดโปรไฟล์จาก collection:', profile.profileCollection || 'ไม่พบเอกสาร');
       console.info('ค่า role จาก Firestore:', profile.role || '(ไม่มี role)');
       const normalizedRole = normalizeRole(profile.role);
-      if (normalizedRole !== 'Admin' && profile.status !== 'approved') {
+      const normalizedStatus = String(profile.status || '').trim().toLowerCase();
+      console.info('ค่า status จาก Firestore:', JSON.stringify(profile.status), '→ normalized:', normalizedStatus);
+      // ถ้าพบ profile ใน Firestore แต่ไม่มี status field → บัญชีสร้างโดย Admin โดยตรง ถือว่า approved
+      const hasProfile = !!profile.profileCollection;
+      const isApproved = !hasProfile ? false : (normalizedStatus === '' || normalizedStatus === 'approved');
+      if (normalizedRole !== 'Admin' && !isApproved) {
         await auth.signOut();
-        registrationNotice = profile.status === 'rejected'
+        registrationNotice = normalizedStatus === 'rejected'
           ? 'บัญชีนี้ไม่ได้รับการอนุมัติจาก Admin'
-          : 'บัญชีของคุณอยู่ระหว่างรอ Admin อนุมัติ';
+          : !hasProfile
+          ? 'ไม่พบข้อมูลบัญชีในระบบ กรุณาติดต่อ Admin'
+          : `บัญชีของคุณอยู่ระหว่างรอ Admin อนุมัติ (สถานะ: ${profile.status || 'ไม่มีข้อมูล'})`;
         showLogin();
         return;
       }
