@@ -20,6 +20,7 @@ let approverLoadError = '';
 let registrationNotice = '';
 let currentUser = JSON.parse(localStorage.getItem('sparepart_user') || 'null');
 let pendingProtectedPage = null;
+let needsCloudMigration = false;
 
 function setLoading(isLoading, message = 'กำลังโหลด...') {
   const overlay = document.getElementById('loading-overlay');
@@ -59,9 +60,13 @@ async function loadData() {
       const localParts = Array.isArray(fallback.parts) ? fallback.parts : [];
       const localHistory = Array.isArray(fallback.history) ? fallback.history : [];
       const localReceipts = Array.isArray(fallback.receipts) ? fallback.receipts : [];
-      parts = (remoteParts.length ? remoteParts : localParts).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
-      history = remoteHistory.length ? remoteHistory : localHistory;
-      receipts = remoteReceipts.length ? remoteReceipts : localReceipts;
+      const usingLocalParts = remoteParts.length === 0 && localParts.length > 0;
+      const usingLocalHistory = remoteHistory.length === 0 && localHistory.length > 0;
+      const usingLocalReceipts = remoteReceipts.length === 0 && localReceipts.length > 0;
+      needsCloudMigration = usingLocalParts || usingLocalHistory || usingLocalReceipts;
+      parts = (usingLocalParts ? localParts : remoteParts).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+      history = usingLocalHistory ? localHistory : remoteHistory;
+      receipts = usingLocalReceipts ? localReceipts : remoteReceipts;
       return { parts, history };
     }
   }
@@ -69,6 +74,7 @@ async function loadData() {
   parts = (fallback.parts || [...DEFAULT_PARTS]).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
   history = fallback.history || [...DEFAULT_HISTORY];
   receipts = fallback.receipts || [];
+  needsCloudMigration = parts.length > 0 || history.length > 0 || receipts.length > 0;
   return { parts, history };
 }
 
@@ -90,6 +96,11 @@ function saveCart() {
 
 async function initializeData() {
   await loadData();
+  if (needsCloudMigration && currentUser && currentUser.role !== 'Guest') {
+    await saveData(parts, history);
+    needsCloudMigration = false;
+    console.info('ย้ายข้อมูลเดิมจากเครื่องขึ้น Firestore สำเร็จ');
+  }
 }
 
 async function refreshApprovalData(showMessage = true) {
@@ -293,7 +304,7 @@ async function uploadImageToFirebaseStorage(file) {
     contentType: file.type,
     customMetadata: { uploadedAt: new Date().toISOString() }
   });
-  return snapshot.ref.getDownloadURL();
+  return await snapshot.ref.getDownloadURL();
 }
 
 function toggleTheme() {
