@@ -67,6 +67,7 @@ async function loadData() {
       parts = (usingLocalParts ? localParts : remoteParts).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
       history = usingLocalHistory ? localHistory : remoteHistory;
       receipts = usingLocalReceipts ? localReceipts : remoteReceipts;
+      await resolveStorageImageReferences(parts);
       return { parts, history };
     }
   }
@@ -75,6 +76,7 @@ async function loadData() {
   history = fallback.history || [...DEFAULT_HISTORY];
   receipts = fallback.receipts || [];
   needsCloudMigration = parts.length > 0 || history.length > 0 || receipts.length > 0;
+  await resolveStorageImageReferences(parts);
   return { parts, history };
 }
 
@@ -245,6 +247,23 @@ function normalizeImageUrl(value, fallbackText) {
 
 function getPartImage(p) {
   return normalizeImageUrl(p.image, p.name || p.code || 'Spare Part');
+}
+
+async function resolveStorageImageReferences(items) {
+  await Promise.all(items.map(async item => {
+    const value = typeof item.image === 'string' ? item.image.trim() : '';
+    if (!value || /^https?:\/\//i.test(value) || value.startsWith('data:image/')) return;
+    if (!value.startsWith('gs://') && !value.startsWith('warehouse/parts/')) return;
+    try {
+      const reference = value.startsWith('gs://')
+        ? storage.refFromURL(value)
+        : storage.ref(value);
+      item.image = await reference.getDownloadURL();
+    } catch (error) {
+      console.warn('โหลด URL รูปภาพจาก Firebase Storage ไม่สำเร็จ:', value, error.code);
+      item.image = '';
+    }
+  }));
 }
 
 function formatDisplayDate(value) {
