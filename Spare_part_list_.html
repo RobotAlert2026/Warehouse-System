@@ -17,7 +17,7 @@
     <div id="loading-message">กำลังโหลด...</div>
   </div>
 </div>
-<div id="login-screen" class="login-screen">
+<div id="login-screen" class="login-screen hidden">
   <div class="login-card">
     <h2>🔐 เข้าสู่ระบบคลังอะไหล่</h2>
     <div class="form-group">
@@ -53,6 +53,9 @@
       </div>
     </div>
     <div class="login-hint">กรุณา Login ด้วยบัญชีที่ท่านสมัครใช้งาน</div>
+    <div class="btn-row" style="justify-content:center;margin-top:10px">
+      <button class="btn btn-outline btn-sm" type="button" onclick="closeLoginPrompt()">กลับไปดูรายการ</button>
+    </div>
     <div id="login-message" class="login-message"></div>
   </div>
 </div>
@@ -94,7 +97,7 @@
         <span class="nav-icon">⚠️</span> แจ้งเตือนสต็อกต่ำ
         <span class="nav-badge" id="low-badge">0</span>
       </div>
-      <div class="nav-item" onclick="navigate('recommend')">
+      <div class="nav-item" id="nav-recommend" onclick="navigate('recommend')">
         <span class="nav-icon">💡</span> ข้อแนะนำ
       </div>
     </nav>
@@ -115,7 +118,8 @@
         </button>
         <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" type="button" aria-label="Switch theme" title="สลับธีม">☾</button>
         <button class="theme-toggle" id="language-toggle" onclick="toggleLanguage()" type="button" aria-label="Switch language" title="เปลี่ยนภาษา">EN</button>
-        <div class="local-pill" title="ข้อมูลหลักบันทึกใน Firebase และรูปภาพบันทึกใน Cloudinary">☁️ Firebase + Cloudinary</div>
+        <div class="local-pill" title="ข้อมูลหลักและรูปภาพบันทึกใน Firebase">☁️ Firebase Storage</div>
+        <button id="login-btn" class="btn btn-primary btn-sm" onclick="showLoginPrompt()" type="button">เข้าสู่ระบบ</button>
         <div id="user-chip" class="user-chip" style="display:none"></div>
         <button id="logout-btn" class="btn btn-outline btn-sm" onclick="logout()" style="display:none">🚪 ออกระบบ</button>
         <div style="font-size:12px;color:var(--muted)" id="current-date"></div>
@@ -548,6 +552,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="translations.js"></script>
 <script src="app.js"></script>

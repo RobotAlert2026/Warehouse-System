@@ -1,0 +1,18 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /warehouse/parts/{imageId} {
+      // Catalog images are public because the website can be browsed without login.
+      allow read: if true;
+
+      // Uploaded images must be no larger than the client-side 5 MB limit
+      // and must have an image MIME type.
+      allow create, update: if request.auth != null
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      allow delete: if request.auth != null;
+    }
+  }
+}

@@ -105,7 +105,7 @@ const translations = {
     'กำลังตรวจสอบบัญชี...': 'Checking account...',
     'กำลังสร้างบัญชี...': 'Creating account...',
     'เข้าสู่ระบบสำเร็จ': 'Login successful',
-    'ข้อมูลหลักบันทึกใน Firebase และรูปภาพบันทึกใน Cloudinary': 'Data is stored in Firebase and images in Cloudinary'
+    'ข้อมูลหลักและรูปภาพบันทึกใน Firebase': 'Data and images are stored in Firebase'
   }
 };
 

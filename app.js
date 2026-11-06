@@ -2,10 +2,9 @@
 const STORAGE_KEY = 'sparepart_v1';
 const CART_KEY = 'sparepart_cart_v1';
 const DATA_DOCUMENT = 'warehouse/data';
-const CLOUDINARY_CLOUD_NAME = 's52qoaji';
-const CLOUDINARY_UPLOAD_PRESET = 's52qoaji';
 const auth = firebase.auth();
 const db = firebase.firestore();
+const storage = firebase.storage();
 
 const DEFAULT_PARTS = [];
 const DEFAULT_HISTORY = [];
@@ -20,6 +19,7 @@ let approvers = [];
 let approverLoadError = '';
 let registrationNotice = '';
 let currentUser = JSON.parse(localStorage.getItem('sparepart_user') || 'null');
+let pendingProtectedPage = null;
 
 function setLoading(isLoading, message = 'กำลังโหลด...') {
   const overlay = document.getElementById('loading-overlay');
@@ -30,20 +30,41 @@ function setLoading(isLoading, message = 'กำลังโหลด...') {
 }
 
 async function loadData() {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  let fallback = { parts: [...DEFAULT_PARTS], history: [...DEFAULT_HISTORY], receipts: [] };
+  if (stored) {
+    try {
+      fallback = { ...fallback, ...JSON.parse(stored) };
+    } catch (error) {
+      console.warn('ข้อมูลสำรองในเครื่องไม่ใช่ JSON ที่ถูกต้อง:', error);
+    }
+  }
+
   if (db) {
-    const snapshot = await db.doc(DATA_DOCUMENT).get();
-    if (snapshot.exists) {
+    let snapshot = null;
+    try {
+      snapshot = await db.doc(DATA_DOCUMENT).get();
+    } catch (error) {
+      // Public browsing should still work while Firestore Rules are being deployed.
+      if (error.code !== 'permission-denied') throw error;
+      console.warn('ยังอ่าน Firestore ไม่ได้ ใช้ข้อมูลสำรองในเครื่องแทน:', error.code);
+    }
+    if (snapshot?.exists) {
       const remote = snapshot.data();
-      parts = (remote.parts || []).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
-      history = remote.history || [];
-      receipts = remote.receipts || [];
+      // Keep previously saved browser data visible when Firestore has an empty document.
+      // This also supports the first migration from the old localStorage-based version.
+      const remoteParts = Array.isArray(remote.parts) ? remote.parts : [];
+      const remoteHistory = Array.isArray(remote.history) ? remote.history : [];
+      const remoteReceipts = Array.isArray(remote.receipts) ? remote.receipts : [];
+      const localParts = Array.isArray(fallback.parts) ? fallback.parts : [];
+      const localHistory = Array.isArray(fallback.history) ? fallback.history : [];
+      const localReceipts = Array.isArray(fallback.receipts) ? fallback.receipts : [];
+      parts = (remoteParts.length ? remoteParts : localParts).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+      history = remoteHistory.length ? remoteHistory : localHistory;
+      receipts = remoteReceipts.length ? remoteReceipts : localReceipts;
       return { parts, history };
     }
   }
-  const stored = localStorage.getItem(STORAGE_KEY);
-  const fallback = stored
-    ? JSON.parse(stored)
-    : { parts: [...DEFAULT_PARTS], history: [...DEFAULT_HISTORY] };
 
   parts = (fallback.parts || [...DEFAULT_PARTS]).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
   history = fallback.history || [...DEFAULT_HISTORY];
@@ -84,11 +105,16 @@ async function refreshApprovalData(showMessage = true) {
 }
 
 async function loadUserProfile(uid) {
-  for (const collectionName of ['user', 'users', 'admin']) {
-    const snapshot = await db.collection(collectionName).doc(uid).get();
-    if (snapshot.exists) {
-      return { ...snapshot.data(), profileCollection: collectionName };
+  try {
+    for (const collectionName of ['user', 'users', 'admin']) {
+      const snapshot = await db.collection(collectionName).doc(uid).get();
+      if (snapshot.exists) {
+        return { ...snapshot.data(), profileCollection: collectionName };
+      }
     }
+  } catch (error) {
+    if (error.code !== 'permission-denied') throw error;
+    console.warn('อ่าน Profile ไม่ได้ ใช้ข้อมูลจาก Firebase Authentication แทน:', error.code);
   }
   return {};
 }
@@ -99,7 +125,7 @@ function normalizeRole(role) {
 
 async function loadApprovers() {
   const approverSelect = document.getElementById('cart-approver');
-  if (!approverSelect) return;
+  if (!approverSelect || !currentUser || currentUser.role === 'Guest') return;
   approverLoadError = '';
   try {
     const snapshot = await db.collection('user').get();
@@ -250,25 +276,21 @@ function readImageFile(file, callback) {
   reader.readAsDataURL(file);
 }
 
-async function uploadImageToCloudinary(file) {
+async function uploadImageToFirebaseStorage(file) {
   if (!file) return '';
   if (!file.type.startsWith('image/')) throw new Error('ไฟล์ต้องเป็นรูปภาพเท่านั้น');
   if (file.size > 5 * 1024 * 1024) throw new Error('รูปภาพต้องมีขนาดไม่เกิน 5 MB');
 
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-  formData.append('folder', 'warehouse/parts');
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
-    method: 'POST',
-    body: formData
+  const extension = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+  const uniqueId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  const storageRef = storage.ref(`warehouse/parts/${Date.now()}-${uniqueId}.${extension}`);
+  const snapshot = await storageRef.put(file, {
+    contentType: file.type,
+    customMetadata: { uploadedAt: new Date().toISOString() }
   });
-  const result = await response.json();
-  if (!response.ok || !result.secure_url) {
-    const cloudinaryMessage = result.error?.message || `HTTP ${response.status}`;
-    throw new Error(`Cloudinary: ${cloudinaryMessage} (cloud: ${CLOUDINARY_CLOUD_NAME}, preset: ${CLOUDINARY_UPLOAD_PRESET})`);
-  }
-  return result.secure_url;
+  return snapshot.ref.getDownloadURL();
 }
 
 function toggleTheme() {
@@ -296,12 +318,14 @@ function applySavedTheme() {
 }
 
 function showApp() {
+  currentUser = currentUser || { name: 'Guest', role: 'Guest' };
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
-  document.getElementById('user-chip').style.display = 'inline-flex';
-  document.getElementById('logout-btn').style.display = 'inline-flex';
+  document.getElementById('login-btn').style.display = currentUser.role === 'Guest' ? 'inline-flex' : 'none';
+  document.getElementById('user-chip').style.display = currentUser.role === 'Guest' ? 'none' : 'inline-flex';
+  document.getElementById('logout-btn').style.display = currentUser.role === 'Guest' ? 'none' : 'inline-flex';
   document.getElementById('user-chip').innerHTML = `👤 ${currentUser.name} <span style="opacity:.7">(${currentUser.role})</span>`;
-  document.getElementById('cart-withdrawer').value = currentUser.name;
+  document.getElementById('cart-withdrawer').value = currentUser.role === 'Guest' ? '' : currentUser.name;
   applyAccessState();
   updateAlerts();
   updateCartBadge();
@@ -313,6 +337,12 @@ function showApp() {
   renderLowStock();
   renderRecommendations();
   loadPendingUsers();
+  if (currentUser.role === 'Guest') return;
+  if (pendingProtectedPage) {
+    const nextPage = pendingProtectedPage;
+    pendingProtectedPage = null;
+    navigate(nextPage);
+  }
   toast(`เข้าสู่ระบบสำเร็จ ยินดีต้อนรับ ${currentUser.name}`, 'success');
 }
 
@@ -321,12 +351,25 @@ function showLogin() {
   document.getElementById('login-screen').classList.remove('hidden');
   document.getElementById('user-chip').style.display = 'none';
   document.getElementById('logout-btn').style.display = 'none';
+  document.getElementById('login-btn').style.display = 'none';
   document.getElementById('login-email').value = '';
   document.getElementById('login-password').value = '';
   const message = document.getElementById('login-message');
   message.className = registrationNotice ? 'login-message success' : 'login-message';
   message.textContent = registrationNotice;
   registrationNotice = '';
+}
+
+function showLoginPrompt() {
+  document.getElementById('app-shell').classList.remove('hidden');
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('login-email').focus();
+}
+
+function closeLoginPrompt() {
+  if (currentUser && currentUser.role !== 'Guest') return;
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
 }
 
 function toggleRegistration(show = true) {
@@ -409,17 +452,16 @@ async function logout() {
   await auth.signOut();
   currentUser = null;
   localStorage.removeItem('sparepart_user');
-  showLogin();
+  showApp();
 }
 
 function getEffectivePermissions() {
-  if (!currentUser) return { receive: false, withdraw: false, adminOnly: false };
+  if (!currentUser || currentUser.role === 'Guest') return { receive: false, withdraw: true, adminOnly: false };
   if (currentUser.role === 'Admin') return { receive: true, withdraw: true, adminOnly: true };
   return { receive: false, withdraw: true, adminOnly: false };
 }
 
 function canAccessAction(action) {
-  if (!currentUser) return false;
   return getEffectivePermissions()[action] === true;
 }
 
@@ -442,8 +484,14 @@ function applyAccessState() {
   if (receiveNav) receiveNav.classList.toggle('disabled', !receiveAllowed);
   if (shopNav) shopNav.classList.toggle('disabled', !withdrawAllowed);
   if (cartNav) cartNav.classList.toggle('disabled', !withdrawAllowed);
-  if (lowstockNav) lowstockNav.style.display = adminOnly ? '' : 'none';
-  if (recommendNav) recommendNav.style.display = adminOnly ? '' : 'none';
+  if (lowstockNav) {
+    lowstockNav.style.display = '';
+    lowstockNav.classList.toggle('disabled', !adminOnly);
+  }
+  if (recommendNav) {
+    recommendNav.style.display = '';
+    recommendNav.classList.toggle('disabled', !adminOnly);
+  }
   if (receiveBlock) receiveBlock.classList.toggle('hidden', receiveAllowed);
   if (receiveWrapper) receiveWrapper.classList.toggle('hidden', !receiveAllowed);
   if (shopBlock) shopBlock.classList.toggle('hidden', withdrawAllowed);
@@ -461,6 +509,11 @@ const TITLES = {
 };
 
 function navigate(page) {
+  if ((page === 'shop' || page === 'cart') && (!currentUser || currentUser.role === 'Guest')) {
+    pendingProtectedPage = page;
+    showLoginPrompt();
+    return;
+  }
   if ((page === 'receive' && !canAccessAction('receive')) || ((page === 'shop' || page === 'cart') && !canAccessAction('withdraw'))) {
     toast('คุณไม่มีสิทธิ์ใช้งานหน้านี้ โปรดติดต่อ Admin', 'error');
     return;
@@ -689,6 +742,10 @@ function stepShopQty(partId, delta) {
 }
 
 function addToCart(partId) {
+  if (!currentUser || currentUser.role === 'Guest') {
+    showLoginPrompt();
+    return;
+  }
   const p = parts.find(x => x.id === partId);
   if (!p) return;
   const input = document.getElementById(`shop-qty-${partId}`);
@@ -801,6 +858,10 @@ function clearCart() {
 }
 
 async function checkoutCart() {
+  if (!currentUser || currentUser.role === 'Guest') {
+    showLoginPrompt();
+    return;
+  }
   if (!canAccessAction('withdraw')) {
     toast('คุณไม่มีสิทธิ์เบิกอะไหล่ โปรดติดต่อ Admin', 'error');
     return;
@@ -1017,7 +1078,7 @@ async function saveEditedPart() {
   };
 
   try {
-    const uploadedImageUrl = imageFile ? await uploadImageToCloudinary(imageFile) : '';
+    const uploadedImageUrl = imageFile ? await uploadImageToFirebaseStorage(imageFile) : '';
     await finishSave(uploadedImageUrl || imageUrl);
   } catch (error) {
     toast(error.message || 'บันทึกข้อมูลไม่สำเร็จ', 'error');
@@ -1107,7 +1168,7 @@ async function receivePart() {
   };
 
   try {
-    const uploadedImageUrl = imageFile ? await uploadImageToCloudinary(imageFile) : '';
+    const uploadedImageUrl = imageFile ? await uploadImageToFirebaseStorage(imageFile) : '';
     await finishSave(uploadedImageUrl || imageUrl);
   } catch (error) {
     toast(error.message || 'บันทึกรับเข้าไม่สำเร็จ', 'error');
@@ -1476,12 +1537,12 @@ function updateImagePreview(previewId, urlInputId, fileInputId) {
 async function bootstrap() {
   applySavedTheme();
   setLoading(true, 'กำลังตรวจสอบการเข้าสู่ระบบ...');
-  showLogin();
   auth.onAuthStateChanged(async (user) => {
     try {
       if (!user) {
         currentUser = null;
-        showLogin();
+        await initializeData();
+        showApp();
         return;
       }
       const profile = await loadUserProfile(user.uid);
@@ -1493,7 +1554,9 @@ async function bootstrap() {
       console.info('ค่า status จาก Firestore:', JSON.stringify(profile.status), '→ normalized:', normalizedStatus);
       // ถ้าพบ profile ใน Firestore แต่ไม่มี status field → บัญชีสร้างโดย Admin โดยตรง ถือว่า approved
       const hasProfile = !!profile.profileCollection;
-      const isApproved = !hasProfile ? false : (normalizedStatus === '' || normalizedStatus === 'approved');
+      // A Firebase Authentication account without a Firestore profile is still
+      // allowed to sign in as a regular User. Pending/rejected profiles remain blocked.
+      const isApproved = !hasProfile || normalizedStatus === '' || normalizedStatus === 'approved';
       if (normalizedRole !== 'Admin' && !isApproved) {
         await auth.signOut();
         registrationNotice = normalizedStatus === 'rejected'

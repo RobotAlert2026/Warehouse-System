@@ -1,0 +1,24 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The catalog and dashboard can be viewed without signing in.
+    match /warehouse/data {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // User profiles are only available to authenticated users.
+    match /user/{userId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /users/{userId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /admin/{userId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
