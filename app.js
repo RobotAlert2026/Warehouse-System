@@ -64,7 +64,7 @@ async function loadData() {
       const usingLocalHistory = remoteHistory.length === 0 && localHistory.length > 0;
       const usingLocalReceipts = remoteReceipts.length === 0 && localReceipts.length > 0;
       needsCloudMigration = usingLocalParts || usingLocalHistory || usingLocalReceipts;
-      parts = (usingLocalParts ? localParts : remoteParts).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+      parts = (usingLocalParts ? localParts : remoteParts).map(normalizePartImageField);
       history = usingLocalHistory ? localHistory : remoteHistory;
       receipts = usingLocalReceipts ? localReceipts : remoteReceipts;
       await resolveStorageImageReferences(parts);
@@ -72,7 +72,7 @@ async function loadData() {
     }
   }
 
-  parts = (fallback.parts || [...DEFAULT_PARTS]).map(p => ({ ...p, image: sanitizeStoredImage(p.image) }));
+  parts = (fallback.parts || [...DEFAULT_PARTS]).map(normalizePartImageField);
   history = fallback.history || [...DEFAULT_HISTORY];
   receipts = fallback.receipts || [];
   needsCloudMigration = parts.length > 0 || history.length > 0 || receipts.length > 0;
@@ -219,6 +219,11 @@ function sanitizeStoredImage(value) {
   if (!trimmed) return '';
   if (isGeneratedPlaceholderImage(trimmed)) return '';
   return trimmed;
+}
+
+function normalizePartImageField(part) {
+  const imageValue = part?.image || part?.imageUrl || part?.imageURL || part?.image_url || part?.photo || '';
+  return { ...part, image: sanitizeStoredImage(imageValue) };
 }
 
 function looksLikeImageReference(value) {
