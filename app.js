@@ -187,8 +187,11 @@ function approveUser(uid) { return updateUserStatus(uid, 'approved'); }
 function rejectUser(uid) { return updateUserStatus(uid, 'rejected'); }
 
 function makePlaceholderImage(text) {
-  const safeText = encodeURIComponent(text || 'Spare Part');
-  return `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><rect width='100%' height='100%' rx='16' fill='%23dbeafe'/><rect x='12' y='12' width='96' height='96' rx='12' fill='%23eff6ff'/><text x='60' y='70' text-anchor='middle' font-size='14' fill='%232563eb'>${safeText}</text></svg>`;
+  const safeText = String(text || 'Spare Part').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[character]));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="100%" height="100%" rx="16" fill="#dbeafe"/><rect x="12" y="12" width="96" height="96" rx="12" fill="#eff6ff"/><text x="60" y="70" text-anchor="middle" font-size="14" fill="#2563eb">${safeText}</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
 function isGeneratedPlaceholderImage(value) {
