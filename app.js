@@ -222,8 +222,29 @@ function sanitizeStoredImage(value) {
 }
 
 function normalizePartImageField(part) {
-  const imageValue = part?.image || part?.imageUrl || part?.imageURL || part?.image_url || part?.photo || '';
-  return { ...part, image: sanitizeStoredImage(imageValue) };
+  const imageValue = part?.image
+    || part?.imageUrl
+    || part?.imageURL
+    || part?.image_url
+    || part?.photo
+    || part?.downloadURL
+    || part?.downloadUrl
+    || part?.storagePath
+    || part?.imagePath
+    || part?.imageData
+    || part?.images
+    || '';
+  const imageCandidate = Array.isArray(imageValue) ? imageValue[0] : imageValue;
+  const imageReference = typeof imageCandidate === 'object'
+    ? (imageCandidate.url
+      || imageCandidate.downloadURL
+      || imageCandidate.downloadUrl
+      || imageCandidate.href
+      || imageCandidate.path
+      || imageCandidate.fullPath
+      || '')
+    : imageCandidate;
+  return { ...part, image: sanitizeStoredImage(imageReference) };
 }
 
 function looksLikeImageReference(value) {
@@ -242,7 +263,9 @@ function normalizeImageUrl(value, fallbackText) {
   const trimmed = value.trim();
   if (!trimmed) return makePlaceholderImage(fallbackText || 'Spare Part');
   if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return encodeURI(trimmed);
+    // Firebase download URLs already contain encoded path/query values.
+    // Do not encode the complete URL again before assigning it to <img>.
+    return trimmed;
   }
   if (trimmed.startsWith('/')) {
     return encodeURI(`${window.location.origin}${trimmed}`);
@@ -251,7 +274,25 @@ function normalizeImageUrl(value, fallbackText) {
 }
 
 function getPartImage(p) {
-  return normalizeImageUrl(p.image, p.name || p.code || 'Spare Part');
+  const normalizedPart = normalizePartImageField(p || {});
+  if (!normalizedPart.image) {
+    console.warn('[Warehouse] รายการอะไหล่ยังไม่มี URL ภาพ:', normalizedPart.name || normalizedPart.code || normalizedPart.id);
+  }
+  return normalizeImageUrl(normalizedPart.image, normalizedPart.name || normalizedPart.code || 'Spare Part');
+}
+
+function logImageLoadError(imageElement, partName) {
+  console.error('[Warehouse] โหลดภาพไม่สำเร็จ:', {
+    part: partName,
+    src: imageElement?.src || ''
+  });
+  if (imageElement?.dataset?.imageRetry !== '1' && imageElement?.src) {
+    imageElement.dataset.imageRetry = '1';
+    imageElement.src = decodeURI(imageElement.src);
+    return;
+  }
+  imageElement.onerror = null;
+  imageElement.src = makePlaceholderImage(partName || 'Spare Part');
 }
 
 async function resolveStorageImageReferences(items) {
@@ -266,7 +307,6 @@ async function resolveStorageImageReferences(items) {
       item.image = await reference.getDownloadURL();
     } catch (error) {
       console.warn('โหลด URL รูปภาพจาก Firebase Storage ไม่สำเร็จ:', value, error.code);
-      item.image = '';
     }
   }));
 }
@@ -743,7 +783,7 @@ function renderShop() {
         const maxQty = Math.max(0, p.qty - inCart);
         return `<div class="product-card ${outOfStock ? 'product-out' : ''}">
           <div class="product-img-wrap">
-            <img src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">
+            <img src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="logImageLoadError(this, this.alt);">
             <span class="badge ${st.cls} product-stock-badge">${st.label}</span>
             <span class="badge badge-blue product-cat-badge">${p.category}</span>
           </div>
@@ -833,7 +873,7 @@ function renderCart() {
     if (!p) return '';
     const st = getStockStatus(p);
     return `<div class="cart-row">
-      <img src="${getPartImage(p)}" alt="${p.name}" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">
+      <img src="${getPartImage(p)}" alt="${p.name}" onerror="logImageLoadError(this, this.alt);">
       <div class="cart-row-info">
         <div class="cart-row-name">${p.name}</div>
         <div class="cart-row-meta">${p.code} · คงเหลือในคลัง ${p.qty} <span class="badge ${st.cls}" style="margin-left:6px">${st.label}</span></div>
@@ -983,7 +1023,7 @@ function renderInventory() {
         const st = getStockStatus(p);
         return `<tr>
           <td><span style="font-family:var(--mono);font-size:12px;color:var(--accent)">${p.code}</span></td>
-          <td><img class="thumb" src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';"></td>
+          <td><img class="thumb" src="${getPartImage(p)}" alt="${p.name}" onclick="openImagePreview('${getPartImage(p)}', event)" onerror="logImageLoadError(this, this.alt);"></td>
           <td>${p.name}</td>
           <td><span class="badge badge-blue">${p.category}</span></td>
           <td style="font-family:var(--mono);font-weight:700">${p.qty}</td>
@@ -1042,7 +1082,7 @@ function openEditPart(id) {
   document.getElementById('edit-image-url').value = isGeneratedPlaceholderImage(p.image) ? '' : (p.image || '');
   document.getElementById('edit-image-file').value = '';
   const preview = document.getElementById('edit-image-preview');
-  preview.innerHTML = `<img src="${getPartImage(p)}" alt="${p.name}" onerror="this.onerror=null;this.src='${makePlaceholderImage(p.name || p.code || 'Spare Part')}';">`;
+  preview.innerHTML = `<img src="${getPartImage(p)}" alt="${p.name}" onerror="logImageLoadError(this, this.alt);">`;
   document.getElementById('edit-modal-bg').classList.add('open');
 }
 
@@ -1288,7 +1328,7 @@ function renderApprovalRequests() {
   count.textContent = `${pending.length} รายการ`;
   card.classList.toggle('hidden', currentUser?.role !== 'Admin' || pending.length === 0);
   list.innerHTML = pending.map(entry => { const part = parts.find(item => item.id === entry.partId); const image = entry.image || part?.image || ''; return `<div class="rec-item approval-request">
-    <img class="approval-image" src="${getPartImage({ image, name: entry.partName })}" alt="${entry.partName}" onerror="this.onerror=null;this.src='${makePlaceholderImage(entry.partName)}';">
+    <img class="approval-image" src="${getPartImage({ image, name: entry.partName })}" alt="${entry.partName}" onerror="logImageLoadError(this, this.alt);">
     <div class="rec-body">
       <div class="rec-title">${entry.partName} x${entry.qty}</div>
       <div class="rec-desc">ผู้เบิก: ${entry.withdrawer} · เครื่องจักร: ${entry.machine}</div>
